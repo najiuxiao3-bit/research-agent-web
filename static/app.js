@@ -403,6 +403,7 @@
     });
     if (isResearch) {
       modelBadge.textContent = "Research Agent";
+      if (!currentId) sessionTitle.textContent = "新的调研";
     } else {
       modelBadge.textContent = "Browser Tool";
       sessionTitle.textContent = "浏览器自动化";
