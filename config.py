@@ -38,6 +38,12 @@ SEARCH_API_KEY = os.environ.get("SEARCH_API_KEY", "")
 MAX_TURNS = 10          # 最多循环多少轮工具调用，防止死循环
 REQUEST_TIMEOUT = 20    # 单次请求超时（秒）
 
+# 浏览器工具：是否无头运行。
+# 本地演示想看到浏览器窗口，保持 false；云服务器无图形界面时在 .env 设 BROWSER_HEADLESS=1。
+BROWSER_HEADLESS = os.environ.get("BROWSER_HEADLESS", "false").lower() in (
+    "1", "true", "yes", "on"
+)
+
 
 def check_config() -> str:
     """在启动前检查必要配置，返回缺失项的提示；配置齐全返回空字符串。"""

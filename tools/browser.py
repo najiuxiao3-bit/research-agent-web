@@ -114,7 +114,9 @@ def open_first_result(keyword: str) -> dict:
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(
+                headless=config.BROWSER_HEADLESS,
+            )
             page = browser.new_page(user_agent=_UA, viewport={"width": 1280, "height": 900})
 
             # 1. 直达结果页
