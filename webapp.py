@@ -48,7 +48,27 @@ class BrowserRequest(BaseModel):
 
 
 class QuestRunRequest(BaseModel):
-    id: str | None = None
+    id: int | None = None
+
+
+class PlatformRequest(BaseModel):
+    name: str
+    url: str
+    description: str = ""
+    login_required: bool = True
+    enabled: bool = True
+    note: str = ""
+
+
+def _validate_platform(req: PlatformRequest) -> None:
+    name = req.name.strip()
+    url = req.url.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="平台名称不能为空")
+    if not url:
+        raise HTTPException(status_code=400, detail="平台网址不能为空")
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="平台网址需以 http:// 或 https:// 开头")
 
 
 @app.on_event("startup")
@@ -205,14 +225,47 @@ def browser_open(req: BrowserRequest) -> dict:
 
 @app.get("/api/quests")
 def quests_list() -> dict:
-    """任务清单 + 每个任务最近一次运行结果。"""
-    return {"quests": quest.list_quests(), "latest": storage.latest_quest_runs()}
+    """平台配置清单 + 每个平台最近一次运行结果。"""
+    return {"platforms": storage.list_platforms(), "latest": storage.latest_quest_runs()}
+
+
+@app.post("/api/quests")
+def quests_create(req: PlatformRequest) -> dict:
+    """新增一个平台配置。"""
+    _validate_platform(req)
+    platform_id = storage.save_platform(req.model_dump())
+    return {"platform": storage.get_platform(platform_id)}
+
+
+@app.put("/api/quests/{platform_id}")
+def quests_update(platform_id: int, req: PlatformRequest) -> dict:
+    """编辑指定平台配置。"""
+    _validate_platform(req)
+    if not storage.update_platform(platform_id, req.model_dump()):
+        raise HTTPException(status_code=404, detail="平台不存在")
+    return {"platform": storage.get_platform(platform_id)}
+
+
+@app.delete("/api/quests/{platform_id}")
+def quests_delete(platform_id: int) -> dict:
+    """删除指定平台配置。"""
+    if not storage.delete_platform(platform_id):
+        raise HTTPException(status_code=404, detail="平台不存在")
+    return {"ok": True}
 
 
 @app.post("/api/quests/run")
 def quests_run(req: QuestRunRequest) -> dict:
-    """运行指定任务；不传 id 则运行全部已启用任务，结果落库。"""
-    results = quest.run_all(req.id)
+    """运行指定平台；不传 id 则运行全部已启用平台，结果逐条落库。"""
+    if req.id is not None:
+        platform = storage.get_platform(req.id)
+        if platform is None:
+            raise HTTPException(status_code=404, detail="平台不存在")
+        targets = [platform]
+    else:
+        targets = [p for p in storage.list_platforms() if p["enabled"]]
+
+    results = quest.run_platforms(targets)
     for item in results:
         storage.save_quest_run(item)
     return {"results": results}
