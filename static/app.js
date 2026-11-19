@@ -25,6 +25,12 @@
   const browserResult = document.getElementById("browser-result");
   let browserBusy = false;
 
+  // ----- 任务中心（跨平台签到 / 领额度，独立链路） -----
+  const viewTasks = document.getElementById("view-tasks");
+  const questGrid = document.getElementById("quest-grid");
+  const questRunAll = document.getElementById("quest-run-all");
+  let questBusy = false;
+
   // ----- 状态 -----
   let currentId = null;
   let busy = false;
@@ -265,7 +271,7 @@
     queryEl.focus();
   }
 
-  // ----- 清除：清空全部会话 -----
+  // ----- 清除：清空全部历史会话 -----
   async function clearHistory() {
     if (busy) return;
     if (!confirm("确认清空全部历史会话？将删除所有问答、来源与轨迹，不可恢复。")) return;
@@ -394,20 +400,24 @@
 
   // ----- 视图切换 -----
   function switchView(view) {
-    const isResearch = view === "research";
-    viewResearch.classList.toggle("hidden", !isResearch);
-    viewBrowser.classList.toggle("hidden", isResearch);
-    sidebar.classList.toggle("hidden", !isResearch);
+    viewResearch.classList.toggle("hidden", view !== "research");
+    viewBrowser.classList.toggle("hidden", view !== "browser");
+    viewTasks.classList.toggle("hidden", view !== "tasks");
+    sidebar.classList.toggle("hidden", view !== "research");
     viewTabs.querySelectorAll(".tab").forEach((t) => {
       t.classList.toggle("active", t.dataset.view === view);
     });
-    if (isResearch) {
+    if (view === "research") {
       modelBadge.textContent = "Research Agent";
       if (!currentId) sessionTitle.textContent = "新的调研";
-    } else {
+    } else if (view === "browser") {
       modelBadge.textContent = "Browser Tool";
       sessionTitle.textContent = "浏览器自动化";
       browserKeyword.focus();
+    } else {
+      modelBadge.textContent = "Quest Center";
+      sessionTitle.textContent = "任务中心";
+      loadQuests();
     }
   }
 
@@ -500,6 +510,107 @@
   browserKeyword.addEventListener("keydown", (e) => {
     if (e.key === "Enter") browserRunHandler();
   });
+
+  // ----- 任务中心：清单渲染与运行 -----
+  const QUEST_STATUS = {
+    claim: { label: "已领取", cls: "ok" },
+    already: { label: "今日已领", cls: "already" },
+    login_required: { label: "需登录", cls: "login" },
+    not_found: { label: "未找到入口", cls: "muted" },
+    error: { label: "失败", cls: "fail" },
+    pending: { label: "待运行", cls: "muted" },
+  };
+
+  function questCardHtml(q, latest) {
+    const r = latest || {};
+    const st = QUEST_STATUS[r.status] || QUEST_STATUS.pending;
+    const loginTag = q.login_required
+      ? '<span class="quest-tag">需登录</span>'
+      : '<span class="quest-tag free">公开</span>';
+    const disabled = !q.enabled;
+    const shot = r.screenshot_url
+      ? `<img class="browser-shot" src="${escapeHtml(r.screenshot_url)}" alt="任务截图" onerror="this.style.display='none'">`
+      : "";
+    const msg = r.message ? `<div class="quest-msg">${escapeHtml(r.message)}</div>` : "";
+    const note = q.note ? `<div class="quest-note">${escapeHtml(q.note)}</div>` : "";
+    const time = r.ran_at ? `<span class="quest-time">${formatTime(r.ran_at)}</span>` : "";
+
+    return `
+      <div class="quest-card" data-id="${q.id}">
+        <div class="quest-card-head">
+          <div class="quest-name">${escapeHtml(q.name)}</div>
+          <span class="quest-status ${st.cls}">${st.label}</span>
+        </div>
+        <div class="quest-meta">
+          ${loginTag}
+          <a href="${escapeHtml(q.url)}" target="_blank" rel="noopener">${escapeHtml(q.url)}</a>
+          ${time}
+        </div>
+        <p class="quest-desc">${escapeHtml(q.description)}</p>
+        ${note}
+        ${msg}
+        ${shot}
+        <div class="quest-actions">
+          <button class="quest-run" data-id="${q.id}" ${disabled ? "disabled" : ""}>
+            ${disabled ? "待配置" : "运行"}
+          </button>
+        </div>
+      </div>`;
+  }
+
+  async function loadQuests() {
+    try {
+      const resp = await fetch("/api/quests");
+      if (!resp.ok) throw new Error("清单加载失败");
+      const data = await resp.json();
+      const quests = data.quests || [];
+      const latest = data.latest || {};
+      if (quests.length === 0) {
+        questGrid.innerHTML = '<div class="quest-empty">暂无任务，先在 tools/quest.py 中添加平台入口。</div>';
+        return;
+      }
+      questGrid.innerHTML = quests.map((q) => questCardHtml(q, latest[q.id])).join("");
+      questGrid.querySelectorAll(".quest-run").forEach((btn) => {
+        btn.addEventListener("click", () => runQuests(btn.dataset.id));
+      });
+    } catch (err) {
+      questGrid.innerHTML = `<div class="quest-empty">加载失败：${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  async function runQuests(id) {
+    if (questBusy) return;
+    questBusy = true;
+    questRunAll.disabled = true;
+    questGrid.querySelectorAll(".quest-run").forEach((b) => (b.disabled = true));
+
+    try {
+      const resp = await fetch("/api/quests/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: id || null }),
+      });
+      if (!resp.ok) {
+        let detail = "运行失败";
+        try {
+          const err = await resp.json();
+          detail = err.detail || detail;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+      await loadQuests();
+    } catch (err) {
+      questGrid.insertAdjacentHTML(
+        "beforeend",
+        `<div class="quest-empty">运行失败：${escapeHtml(err.message)}</div>`
+      );
+    } finally {
+      questBusy = false;
+      questRunAll.disabled = false;
+    }
+  }
+
+  questRunAll.addEventListener("click", () => runQuests(null));
 
   // ----- 初始化 -----
   loadHistory();
