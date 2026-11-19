@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>资料查询总结助手</title>
+  <style>
+    :root {
+      --bg: #f5f7fa;
+      --panel: #ffffff;
+      --border: #e3e8ef;
+      --text: #1f2733;
+      --muted: #6b7686;
+      --primary: #2563eb;
+      --primary-soft: #e8f0fe;
+      --danger: #d92d20;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    header {
+      padding: 20px 28px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { margin: 0 0 4px; font-size: 20px; }
+    header p { margin: 0; color: var(--muted); font-size: 13px; }
+    main {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: 20px;
+      max-width: 1100px;
+      margin: 20px auto;
+      padding: 0 20px;
+    }
+    aside, section.panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+    }
+    aside h2, section.panel h2 { font-size: 14px; color: var(--muted); margin: 0 0 12px; }
+    #history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+    #history-list li {
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    #history-list li:hover { background: var(--primary-soft); }
+    #history-list .meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+    textarea {
+      width: 100%;
+      min-height: 84px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 15px;
+      resize: vertical;
+      font-family: inherit;
+    }
+    textarea:focus { outline: none; border-color: var(--primary); }
+    .actions { margin-top: 12px; display: flex; align-items: center; gap: 12px; }
+    button {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status { font-size: 13px; color: var(--muted); }
+    #status.error { color: var(--danger); }
+    #result { margin-top: 20px; }
+    #answer { font-size: 15px; }
+    #answer h3 { font-size: 16px; margin: 16px 0 8px; }
+    #answer ul { margin: 8px 0; padding-left: 20px; }
+    #answer a { color: var(--primary); }
+    .sources { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 14px; }
+    .sources h2 { font-size: 14px; color: var(--muted); margin: 0 0 10px; }
+    .sources ol { margin: 0; padding-left: 20px; }
+    .sources li { margin-bottom: 10px; font-size: 13px; }
+    .sources .snippet { color: var(--muted); margin-top: 2px; }
+    .empty { color: var(--muted); font-size: 13px; }
+    @media (max-width: 820px) {
+      main { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>资料查询总结助手</h1>
+    <p>输入问题 → 联网检索 → 提炼带来源的中文摘要（后端 Agent 运行在腾讯云）</p>
+  </header>
+
+  <main>
+    <aside>
+      <h2>历史记录</h2>
+      <ul id="history-list"><li class="empty">加载中…</li></ul>
+    </aside>
+
+    <section class="panel">
+      <form id="ask-form">
+        <textarea id="query" placeholder="例如：2025 年大模型开源生态有哪些代表性进展？" maxlength="1000"></textarea>
+        <div class="actions">
+          <button type="submit" id="submit-btn">开始调研</button>
+          <span id="status"></span>
+        </div>
+      </form>
+
+      <div id="result" hidden>
+        <div id="answer"></div>
+        <div class="sources" id="sources"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById("ask-form");
+    const queryEl = document.getElementById("query");
+    const statusEl = document.getElementById("status");
+    const resultEl = document.getElementById("result");
+    const answerEl = document.getElementById("answer");
+    const sourcesEl = document.getElementById("sources");
+    const historyList = document.getElementById("history-list");
+    const submitBtn = document.getElementById("submit-btn");
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // 轻量 Markdown：标题、链接、加粗、列表、换行
+    function renderMarkdown(text) {
+      let html = escapeHtml(text);
+      html = html.replace(/^### (.*)$/gm, "<h4>$1</h4>");
+      html = html.replace(/^## (.*)$/gm, "<h3>$1</h3>");
+      html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+      html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      html = html.replace(/^- (.*)$/gm, "<li>$1</li>");
+      html = html.replace(/(<li>.*<\/li>)/gs, "<ul>$1</ul>");
+      html = html.replace(/\n/g, "<br>");
+      return html;
+    }
+
+    function renderSources(sources) {
+      if (!sources || sources.length === 0) {
+        sourcesEl.innerHTML = "<h2>参考来源</h2><p class='empty'>本次未取到可靠来源。</p>";
+        return;
+      }
+      const items = sources.map(s =>
+        `<li><a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a>` +
+        (s.snippet ? `<div class="snippet">${escapeHtml(s.snippet)}</div>` : "") + `</li>`
+      ).join("");
+      sourcesEl.innerHTML = `<h2>参考来源（${sources.length}）</h2><ol>${items}</ol>`;
+    }
+
+    function showResult(data) {
+      resultEl.hidden = false;
+      answerEl.innerHTML = renderMarkdown(data.answer || "");
+      renderSources(data.sources || []);
+    }
+
+    async function loadHistory() {
+      const resp = await fetch("/api/history");
+      const data = await resp.json();
+      const records = data.records || [];
+      if (records.length === 0) {
+        historyList.innerHTML = "<li class='empty'>暂无历史记录</li>";
+        return;
+      }
+      historyList.innerHTML = records.map(r =>
+        `<li data-id="${r.id}">
+          <div>${escapeHtml(r.query)}</div>
+          <div class="meta">${escapeHtml(r.created_at)} · ${r.n_sources} 条来源</div>
+        </li>`
+      ).join("");
+      historyList.querySelectorAll("li[data-id]").forEach(li => {
+        li.addEventListener("click", () => loadDetail(Number(li.dataset.id)));
+      });
+    }
+
+    async function loadDetail(id) {
+      statusEl.textContent = "";
+      const resp = await fetch(`/api/history/${id}`);
+      if (!resp.ok) { statusEl.className = "error"; statusEl.textContent = "记录加载失败"; return; }
+      const rec = await resp.json();
+      showResult(rec);
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const query = queryEl.value.trim();
+      if (!query) return;
+      submitBtn.disabled = true;
+      statusEl.className = "";
+      statusEl.textContent = "检索与提炼中，可能需要十几秒…";
+      resultEl.hidden = true;
+
+      try {
+        const resp = await fetch("/api/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          statusEl.className = "error";
+          statusEl.textContent = data.detail || "请求失败";
+          return;
+        }
+        statusEl.textContent = "";
+        showResult(data);
+        loadHistory();
+      } catch (err) {
+        statusEl.className = "error";
+        statusEl.textContent = `网络错误：${err.message}`;
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    loadHistory();
+  </script>
+</body>
+</html>
