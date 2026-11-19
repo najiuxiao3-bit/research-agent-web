@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>资料查询总结助手 · 工作台</title>
+  <title>AI 工作台</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <div class="workbench">
-    <!-- 左侧会话侧栏 -->
-    <aside class="sidebar">
+    <!-- 左侧会话侧栏（仅调研视图使用） -->
+    <aside class="sidebar" id="sidebar">
       <div class="brand">
         <div class="logo" aria-hidden="true">🔍</div>
         <div>
@@ -35,34 +35,58 @@
     <main class="main">
       <header class="topbar">
         <div class="topbar-title" id="session-title">新的调研</div>
+        <nav class="view-tabs" id="view-tabs">
+          <button class="tab active" data-view="research">资料调研</button>
+          <button class="tab" data-view="browser">浏览器自动化</button>
+        </nav>
         <div class="topbar-meta">
           <span class="badge primary" id="model-badge">Research Agent</span>
           <span class="badge" id="stat-badge"></span>
         </div>
       </header>
 
-      <section class="messages">
-        <div class="messages-inner" id="messages-inner"></div>
+      <!-- 视图一：资料调研（Agent 对话流） -->
+      <section id="view-research" class="view">
+        <div class="messages">
+          <div class="messages-inner" id="messages-inner"></div>
 
-        <div class="empty-state" id="empty-state">
-          <div class="big-logo" aria-hidden="true">🔍</div>
-          <h2>开始一次资料调研</h2>
-          <p>输入问题，Agent 会联网检索多轮资料，提炼带来源的中文摘要。</p>
-          <div class="chips">
-            <button class="chip" data-question="2025 年大模型开源生态有哪些代表性进展？">开源大模型进展</button>
-            <button class="chip" data-question="什么是 RAG？它解决了大模型的什么问题？">什么是 RAG</button>
-            <button class="chip" data-question="向量数据库的主要用途和常见产品有哪些？">向量数据库</button>
+          <div class="empty-state" id="empty-state">
+            <div class="big-logo" aria-hidden="true">🔍</div>
+            <h2>开始一次资料调研</h2>
+            <p>输入问题，Agent 会联网检索多轮资料，提炼带来源的中文摘要。</p>
+            <div class="chips">
+              <button class="chip" data-question="2025 年大模型开源生态有哪些代表性进展？">开源大模型进展</button>
+              <button class="chip" data-question="什么是 RAG？它解决了大模型的什么问题？">什么是 RAG</button>
+              <button class="chip" data-question="向量数据库的主要用途和常见产品有哪些？">向量数据库</button>
+            </div>
           </div>
         </div>
+
+        <footer class="composer">
+          <div class="composer-box">
+            <textarea id="query" placeholder="输入要调研的问题…" maxlength="1000"></textarea>
+            <button id="submit-btn" class="send-btn">发送</button>
+          </div>
+          <div class="composer-hint">Enter 发送 · Shift+Enter 换行</div>
+        </footer>
       </section>
 
-      <footer class="composer">
-        <div class="composer-box">
-          <textarea id="query" placeholder="输入要调研的问题…" maxlength="1000"></textarea>
-          <button id="submit-btn" class="send-btn">发送</button>
+      <!-- 视图二：浏览器自动化（独立功能，不走 Agent） -->
+      <section id="view-browser" class="view hidden">
+        <div class="browser-panel">
+          <div class="browser-head">
+            <h2>浏览器自动化</h2>
+            <p>输入关键词，自动打开百度结果页并进入第一条结果，回传页面标题、链接与正文。本地演示时会弹出可见浏览器窗口。</p>
+          </div>
+
+          <div class="browser-box">
+            <input id="browser-keyword" type="text" maxlength="100" placeholder="输入要搜索的关键词，如：故宫博物院" />
+            <button id="browser-run" class="send-btn">运行</button>
+          </div>
+
+          <div id="browser-result" class="browser-result"></div>
         </div>
-        <div class="composer-hint">Enter 发送 · Shift+Enter 换行</div>
-      </footer>
+      </section>
     </main>
   </div>
 
