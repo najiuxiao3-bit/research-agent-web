@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
@@ -25,6 +26,7 @@ from agent import run
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="资料查询总结助手")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 class AskRequest(BaseModel):
