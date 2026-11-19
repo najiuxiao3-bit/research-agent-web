@@ -5,7 +5,7 @@
 - **资料调研**：浏览器输入问题 → 后端联网检索 → 提炼带来源的中文摘要 → 对话与摘要存入 SQLite。
 - **浏览器自动化**：输入关键词 → 自动打开百度结果页并进入第一条 → 提炼要点摘要、截取页面，回传前端卡片；**流程不由模型决策、不写调研库**，由独立接口与独立前端视图承载。
 
-代码按「配置 / 提示词 / 工具 / Agent 循环 / 存储 / Web 接口 / 前端」分层，便于照着改和扩展。
+代码按「配置 / 提示词 / 工具 / LangGraph 状态图 / 存储 / Web 接口 / 前端」分层，便于照着改和扩展。调研 Agent 基于 **LangChain + LangGraph** 实现：`ChatOpenAI` 绑定工具，`StateGraph` 编排「模型 ⇄ 工具」的 ReAct 循环。
 
 ## 一、目录结构
 
@@ -13,9 +13,9 @@
 research-agent/
 ├── main.py             # 命令行入口（保留，可单独跑）
 ├── webapp.py          # FastAPI Web 后端：接口 + 静态页托管
-├── agent.py           # Agent 主循环：调模型 → 工具决策 → 回灌 → 结构化收尾
+├── agent.py           # LangGraph 状态图：模型节点 ⇄ 工具节点，结构化收尾
 ├── config.py         # 读取 .env / 环境变量 + 护栏参数
-├── prompts.py         # 系统提示词 + 工具 Schema
+├── prompts.py         # 系统提示词（工具 schema 由 @tool 自动生成）
 ├── storage.py         # SQLite：对话、来源、摘要、轨迹持久化
 ├── tools/
 │   ├── search.py      # 搜索工具（默认 Bing 抓取，可换官方 API）
@@ -57,7 +57,7 @@ LLM_MODEL=deepseek-flash
 ### 3. 启动 Web 服务
 
 ```powershell
-uvicorn webapp:app --host 127.0.0.1 --port 8000
+uvicorn webapp:app --host 0.0.0.0 --port 8000
 ```
 
 浏览器打开 <http://127.0.0.1:8000> 即可提问；历史记录自动保存在 `data/records.db`。
@@ -77,7 +77,7 @@ python main.py "什么是 RAG 检索增强生成"
 | POST | `/api/ask/stream` | SSE 流式：状态 → 来源 → 逐片摘要 → 完成 |
 | GET | `/api/history` | 历史记录列表（倒序） |
 | GET | `/api/history/{id}` | 单条记录详情（含完整来源与工具轨迹） |
-| POST | `/api/browser/open` | **独立功能**：浏览器自动化，直达百度结果页进入第一条，回传标题/链接/摘要/截图；不走 Agent、不落库 |
+| POST | `/api/browser/open` | **独立功能**：浏览器自动化，直达百度结果页进入第一条，回传标题/链接/正文；不走 Agent、不落库 |
 
 `POST /api/ask` 请求体：
 
@@ -125,12 +125,14 @@ python main.py "什么是 RAG 检索增强生成"
 ```
 浏览器提交问题
   → FastAPI 接收，校验配置与入参
-  → Agent 循环：系统提示 + 问题 → 调模型
-        ├─ tool_calls：执行 search_web，结果回灌，继续循环
-        └─ 无 tool_calls：得到最终摘要
+  → LangGraph 图：系统提示 + 问题进入 agent 节点（模型绑定工具）
+        ├─ 模型返回 tool_calls：进入 tools 节点执行 search_web，回灌 ToolMessage，回到 agent
+        └─ 模型无 tool_calls：得到最终摘要
   → 来源去重截断（最多 10 条），连同轨迹写入 SQLite
   → 返回前端渲染摘要与参考来源；历史可回看
 ```
+
+> 图状态包含 `messages`（消息历史）、`sources`（去重来源）、`trace`（工具轨迹）；新增工具只需在 `agent.py` 用 `@tool` 定义并挂到 `TOOLS` 与 `TOOL_REGISTRY`。
 
 > 浏览器自动化是另一条独立链路：前端「浏览器自动化」视图 → `POST /api/browser/open` → 直接调用 `tools/browser.py`，不进入 Agent 循环、不写调研历史；页面摘要可选调用模型提炼，失败回退本地抽取。
 
@@ -157,6 +159,6 @@ python main.py "什么是 RAG 检索增强生成"
 
 ## 七、安全说明
 
-- `.env`（含 Key）、`data/`（数据库、截图）、`.venv/` 均已在 `.gitignore` 排除，**不要提交到仓库或外发**。
+- `.env`（含 Key）、`data/`（数据库）、`.venv/` 均已在 `.gitignore` 排除，**不要提交到仓库或外发**。
 - Key 只存在后端；前端页面不持有任何密钥。
 - 演示版本未加访问鉴权与 HTTPS，公网使用前请按部署文档第八节加固。

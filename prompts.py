@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""系统提示词与工具定义（Function Calling Schema）。"""
+"""系统提示词。
+
+工具的 function-calling schema 不再手写 JSON：
+在 agent.py 里用 LangChain 的 @tool 装饰器根据函数签名与 docstring 自动生成。
+"""
 
 SYSTEM_PROMPT = """你是一名资料调研助手。工作流程必须严格按以下顺序：
 
@@ -15,33 +19,3 @@ SYSTEM_PROMPT = """你是一名资料调研助手。工作流程必须严格按�
 约束：
 - 不要在最终答案里暴露工具调用过程。
 - 数字、日期、结论必须能在检索资料中找到依据。"""
-
-
-# 工具 schema：告诉模型有什么工具、参数是什么、什么时候用。
-SEARCH_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "search_web",
-        "description": "联网检索公开资料，返回标题、摘要片段和链接。用于查事实、数据、近期事件；不用于读取本地文件或数学计算。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "检索关键词，尽量用名词短语；一次聚焦一个主题。",
-                },
-                "top_k": {
-                    "type": "integer",
-                    "description": "返回资料条数，默认 5，最多 8。",
-                    "default": 5,
-                },
-            },
-            "required": ["query"],
-        },
-    },
-}
-
-# 注册表里把工具名映射到实际函数，agent 循环按名字查表执行。
-TOOL_REGISTRY = {
-    "search_web": None,  # 在 tools/search.py 导入后填充
-}

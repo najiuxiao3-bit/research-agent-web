@@ -1,171 +1,230 @@
 # -*- coding: utf-8 -*-
 """
-Agent 主循环：思考 → 调工具 → 观察结果 → 再决策，直到模型给出最终摘要。
+Agent 主循环（LangGraph 状态图版）：思考 → 调工具 → 观察结果 → 再决策，直到模型给出最终摘要。
 
-run() 返回结构化结果，供命令行与 Web 后端复用：
+与旧版手写循环对外契约完全一致，run() 返回：
     {
       "ok": bool, "status": "ok" | "truncated" | "error",
       "answer": str, "sources": [{title, url, snippet}],
       "trace": [{turn, tool, args, ok, n_results, message}],
       "turns": int, "error": str
     }
+
+架构（LangGraph ReAct 图）：
+    START → agent(模型绑定工具) ──有 tool_calls──▶ tools(执行并回灌) ──▶ agent
+                                  └──无 tool_calls──▶ END
+
+状态：
+    messages  对话消息（add_messages 追加 reducer）
+    sources   去重后的检索来源
+    trace     工具调用轨迹
 """
 
 import json
+import os
+from typing import Annotated, TypedDict
 
-import requests
+# 关闭 LangSmith 在线追踪，避免无 Key 时产生上报告警
+os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.errors import GraphRecursionError
 
 import config
 import prompts
-from tools.search import search_web
+from tools.search import search_web as _search_web
 
-# 把工具函数注册到提示词里的工具表：工具名 → 实际函数
-prompts.TOOL_REGISTRY["search_web"] = search_web
-
-
-def call_llm(messages: list[dict]) -> dict:
-    """调用 OpenAI 兼容的 chat/completions 接口，返回模型的 assistant 消息。"""
-    resp = requests.post(
-        f"{config.LLM_BASE_URL}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {config.LLM_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": config.LLM_MODEL,
-            "messages": messages,
-            "tools": [prompts.SEARCH_TOOL_SCHEMA],
-        },
-        timeout=config.REQUEST_TIMEOUT,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]
+# 工具注册表：工具名 → 实际函数（便于后续新增工具时在此挂载）
+TOOL_REGISTRY: dict[str, object] = {}
 
 
-def _execute_tool(tool_call: dict) -> str:
-    """按工具名查注册表并执行，把结果序列化成文本回灌给模型。"""
-    fn_name = tool_call["function"]["name"]
-    try:
-        args = json.loads(tool_call["function"]["arguments"] or "{}")
-    except json.JSONDecodeError:
-        args = {}
+# ---------- 工具定义（@tool 自动生成 function-calling schema） ----------
 
-    func = prompts.TOOL_REGISTRY.get(fn_name)
-    if func is None:
-        return json.dumps(
-            {"ok": False, "message": f"未知工具：{fn_name}"}, ensure_ascii=False
-        )
+@tool
+def search_web(query: str, top_k: int = 5) -> str:
+    """联网检索公开资料，返回标题、摘要片段和链接。用于查事实、数据、近期事件；不用于读取本地文件或数学计算。
 
-    result = func(**args)
+    Args:
+        query: 检索关键词，尽量用名词短语；一次聚焦一个主题。
+        top_k: 返回资料条数，默认 5，最多 8。
+    """
+    result = _search_web(query, top_k)
     return json.dumps(result, ensure_ascii=False)
 
 
-def run(user_query: str, verbose: bool = False) -> dict:
-    """跑完整 Agent 循环，返回结构化结果。"""
-    messages: list[dict] = [
-        {"role": "system", "content": prompts.SYSTEM_PROMPT},
-        {"role": "user", "content": user_query},
-    ]
+TOOL_REGISTRY["search_web"] = _search_web
+TOOLS = [search_web]
 
-    sources: list[dict] = []
-    trace: list[dict] = []
-    seen_urls: set[str] = set()
-    final_answer = ""
-    turns = 0
 
-    for turn in range(1, config.MAX_TURNS + 1):
-        turns = turn
-        try:
-            message = call_llm(messages)
-        except Exception as exc:  # 模型链路异常，结构化返回，不抛崩上层
-            return {
-                "ok": False,
-                "status": "error",
-                "answer": "",
-                "sources": sources,
-                "trace": trace,
-                "turns": turns,
-                "error": f"模型调用失败：{type(exc).__name__}: {exc}",
+# ---------- 图状态 ----------
+
+class AgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+    sources: list[dict]
+    trace: list[dict]
+
+
+def _build_llm() -> ChatOpenAI:
+    """按配置构造 OpenAI 兼容模型（DeepSeek 兼容端点）。"""
+    return ChatOpenAI(
+        base_url=config.LLM_BASE_URL,
+        api_key=config.LLM_API_KEY,
+        model=config.LLM_MODEL,
+        timeout=config.REQUEST_TIMEOUT,
+    )
+
+
+# ---------- 图节点 ----------
+
+def agent_node(state: AgentState) -> dict:
+    """模型节点：绑定工具后决策下一步（继续调工具或直接收尾）。"""
+    llm_with_tools = _build_llm().bind_tools(TOOLS)
+    response: AIMessage = llm_with_tools.invoke(state["messages"])
+    return {"messages": [response]}
+
+
+def tools_node(state: AgentState) -> dict:
+    """工具节点：执行上一条模型消息里的工具调用，回灌 ToolMessage，并累积来源与轨迹。"""
+    last: AIMessage = state["messages"][-1]
+    new_messages: list[ToolMessage] = []
+    sources: list[dict] = list(state["sources"])
+    trace: list[dict] = list(state["trace"])
+    seen_urls: set[str] = {s.get("url", "") for s in sources}
+    turn = len(trace) + 1
+
+    for call in last.tool_calls:
+        fn_name = call["name"]
+        args = call["args"] or {}
+        func = TOOL_REGISTRY.get(fn_name)
+
+        if func is None:
+            obs = {"ok": False, "results": [], "message": f"未知工具：{fn_name}"}
+        else:
+            try:
+                obs = func(**args)
+            except Exception as exc:  # 工具异常不能让主循环崩溃
+                obs = {"ok": False, "results": [], "message": f"工具异常：{type(exc).__name__}: {exc}"}
+
+        obs_str = json.dumps(obs, ensure_ascii=False)
+
+        for r in obs.get("results", []) or []:
+            url = r.get("url", "")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                sources.append(
+                    {
+                        "title": r.get("title", ""),
+                        "url": url,
+                        "snippet": r.get("snippet", ""),
+                    }
+                )
+
+        trace.append(
+            {
+                "turn": turn,
+                "tool": fn_name,
+                "args": args,
+                "ok": obs.get("ok"),
+                "n_results": len(obs.get("results", []) or []),
+                "message": obs.get("message", ""),
             }
+        )
 
-        # 只保留合法字段，组装干净的 assistant 消息回写
-        assistant_msg = {
-            "role": "assistant",
-            "content": message.get("content"),
+        new_messages.append(ToolMessage(content=obs_str, tool_call_id=call["id"]))
+
+    return {"messages": new_messages, "sources": sources, "trace": trace}
+
+
+# ---------- 条件路由 ----------
+
+def should_continue(state: AgentState) -> str:
+    """模型仍要调工具就回工具节点，否则收尾结束。"""
+    last = state["messages"][-1]
+    return "tools" if getattr(last, "tool_calls", None) else END
+
+
+# ---------- 编译图（模块级只编译一次） ----------
+
+def _build_graph():
+    builder = StateGraph(AgentState)
+    builder.add_node("agent", agent_node)
+    builder.add_node("tools", tools_node)
+    builder.add_edge(START, "agent")
+    builder.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+    builder.add_edge("tools", "agent")
+    return builder.compile()
+
+
+_GRAPH = _build_graph()
+
+
+# ---------- 对外入口 ----------
+
+def run(user_query: str, verbose: bool = False) -> dict:
+    """跑完整 Agent 图，返回结构化结果（契约与旧版一致）。"""
+    initial_state: AgentState = {
+        "messages": [
+            SystemMessage(content=prompts.SYSTEM_PROMPT),
+            HumanMessage(content=user_query),
+        ],
+        "sources": [],
+        "trace": [],
+    }
+    # 每轮「模型 → 工具」占 2 步，留 1 步余量收尾
+    recursion_limit = config.MAX_TURNS * 2 + 1
+
+    final_state: AgentState | None = None
+    truncated = False
+
+    try:
+        # 用 stream 逐轮取状态：超限时仍能保留已累积的来源与轨迹
+        for chunk in _GRAPH.stream(
+            initial_state,
+            config={"recursion_limit": recursion_limit},
+            stream_mode="values",
+        ):
+            final_state = chunk
+            if verbose:
+                last = chunk["messages"][-1]
+                if isinstance(last, AIMessage) and last.tool_calls:
+                    for tc in last.tool_calls:
+                        print(f"  → {tc['name']}({tc['args']})")
+    except GraphRecursionError:
+        truncated = True
+    except Exception as exc:  # 模型链路异常，结构化返回，不抛崩上层
+        return {
+            "ok": False,
+            "status": "error",
+            "answer": "",
+            "sources": [],
+            "trace": [],
+            "turns": 0,
+            "error": f"模型调用失败：{type(exc).__name__}: {exc}",
         }
-        if message.get("tool_calls"):
-            assistant_msg["tool_calls"] = message["tool_calls"]
-        messages.append(assistant_msg)
 
-        tool_calls = message.get("tool_calls") or []
-        if not tool_calls:
-            # 模型不再调工具，认为任务完成
-            final_answer = message.get("content") or ""
-            break
+    state = final_state or initial_state
+    messages = state["messages"]
+    sources = state["sources"]
+    trace = state["trace"]
 
-        if verbose:
-            print(f"[第 {turn} 轮] 请求调用 {len(tool_calls)} 个工具：")
+    last_message = messages[-1] if messages else None
+    final_answer = last_message.content if isinstance(last_message, AIMessage) else ""
+    final_answer = final_answer or ""
 
-        for call in tool_calls:
-            fn_name = call["function"]["name"]
-            args_text = call["function"]["arguments"]
-            try:
-                args = json.loads(args_text or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            if verbose:
-                print(f"  → {fn_name}({args_text})")
+    model_turns = sum(1 for m in messages if isinstance(m, AIMessage))
 
-            observation = _execute_tool(call)
-            try:
-                obs = json.loads(observation)
-            except json.JSONDecodeError:
-                obs = {}
-
-            # 收集去重后的来源条目
-            for r in obs.get("results", []) or []:
-                url = r.get("url", "")
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    sources.append(
-                        {
-                            "title": r.get("title", ""),
-                            "url": url,
-                            "snippet": r.get("snippet", ""),
-                        }
-                    )
-
-            trace.append(
-                {
-                    "turn": turn,
-                    "tool": fn_name,
-                    "args": args,
-                    "ok": obs.get("ok"),
-                    "n_results": len(obs.get("results", []) or []),
-                    "message": obs.get("message", ""),
-                }
-            )
-            if verbose:
-                print(f"  ← {observation[:200]}")
-
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": observation,
-                }
-            )
-    else:
-        # 达到最大轮数仍未收尾
-        final_answer = "已达到最大检索轮数，资料收集停止；以下结论基于现有资料，可能不完整。"
+    if truncated:
         return {
             "ok": True,
             "status": "truncated",
-            "answer": final_answer,
+            "answer": "已达到最大检索轮数，资料收集停止；以下结论基于现有资料，可能不完整。",
             "sources": sources,
             "trace": trace,
-            "turns": turns,
+            "turns": model_turns,
             "error": "",
         }
 
@@ -175,6 +234,6 @@ def run(user_query: str, verbose: bool = False) -> dict:
         "answer": final_answer,
         "sources": sources,
         "trace": trace,
-        "turns": turns,
+        "turns": model_turns,
         "error": "",
     }

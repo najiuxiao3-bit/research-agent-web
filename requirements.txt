@@ -2,3 +2,7 @@ requests==2.34.2
 fastapi>=0.110
 uvicorn[standard]>=0.29
 playwright>=1.40
+# Agent 框架：LangGraph 状态图 + LangChain 模型/工具绑定
+langchain-core>=1.8
+langchain-openai>=1.8
+langgraph>=1.2
