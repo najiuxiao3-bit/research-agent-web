@@ -18,11 +18,9 @@ import requests
 import config
 import prompts
 from tools.search import search_web
-from tools.browser import open_first_result
 
 # 把工具函数注册到提示词里的工具表：工具名 → 实际函数
 prompts.TOOL_REGISTRY["search_web"] = search_web
-prompts.TOOL_REGISTRY["open_first_result"] = open_first_result
 
 
 def call_llm(messages: list[dict]) -> dict:
@@ -36,7 +34,7 @@ def call_llm(messages: list[dict]) -> dict:
         json={
             "model": config.LLM_MODEL,
             "messages": messages,
-            "tools": [prompts.SEARCH_TOOL_SCHEMA, prompts.BROWSER_TOOL_SCHEMA],
+            "tools": [prompts.SEARCH_TOOL_SCHEMA],
         },
         timeout=config.REQUEST_TIMEOUT,
     )
