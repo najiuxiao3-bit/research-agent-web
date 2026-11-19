@@ -405,9 +405,29 @@
         const title = escapeHtml(data.title || "无标题");
         const url = escapeHtml(data.url || "");
         const content = escapeHtml(data.content || "");
+        const summary = (data.summary || "").trim();
         const msg = data.message
           ? `<div class="browser-note">${escapeHtml(data.message)}</div>`
           : "";
+
+        const shot = data.screenshot_url
+          ? `<img class="browser-shot" src="${escapeHtml(data.screenshot_url)}" alt="页面截图" onerror="this.style.display='none'">`
+          : "";
+
+        const summaryHtml = summary
+          ? `<div class="browser-summary">
+               <div class="summary-label">页面摘要</div>
+               <div class="summary-body">${renderMarkdown(summary)}</div>
+             </div>`
+          : "";
+
+        const originalHtml = content
+          ? `<details class="browser-original">
+               <summary>查看原文（${content.length} 字）</summary>
+               <div class="browser-body">${content}</div>
+             </details>`
+          : "";
+
         browserResult.innerHTML = `
           <div class="browser-card">
             <div class="browser-card-head">
@@ -416,7 +436,9 @@
             </div>
             <a class="browser-title" href="${url}" target="_blank" rel="noopener">${title}<span class="link-arrow">↗</span></a>
             ${url ? `<div class="browser-url">${url}</div>` : ""}
-            <div class="browser-body">${content || '<span class="muted">未抽取到正文。</span>'}</div>
+            ${shot}
+            ${summaryHtml}
+            ${originalHtml}
             ${msg}
           </div>`;
       })
