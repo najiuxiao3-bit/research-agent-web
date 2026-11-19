@@ -76,6 +76,7 @@ sudo .venv/bin/playwright install-deps chromium
 - 无头服务器没有图形界面，Chromium 以 headless 模式运行；`install-deps` 会通过 apt 安装运行所需的系统字体与库。
 - **服务器必须在 `.env` 加一行 `BROWSER_HEADLESS=1`**：云主机无桌面，可见模式会启动失败；本地演示才默认弹出窗口。
 - 1 核 1G 内存跑浏览器自动化偏紧，建议至少 1 核 2G；单次浏览器流程约 5~15 秒。
+- 落地页截图存到 `data/screenshots/`（已被 `.gitignore` 排除），后端以 `/screenshots/<文件名>` 静态路径回传；确保运行账号对 `data/` 目录有写权限。截图会持续累积，可定期清理旧 PNG。
 
 ### 3. 写后端配置（敏感信息，不进仓库）
 
@@ -173,6 +174,7 @@ cp data/records.db data/records.db.bak
 | 接口返回 502 模型调用失败 | 查 Key 是否有效、额度、网络能否访问模型端点 |
 | 搜索结果为空/不相关 | 免 Key 的 Bing 抓取覆盖有限，可按 `tools/search.py` 说明接入官方搜索 API |
 | 浏览器自动化超时/打不开页面 | 服务器先执行 `playwright install chromium` 和 `install-deps chromium`；无头环境下目标站点可能拦截或弹验证码，动态渲染页面正文可能抓不全 |
+| 截图不显示 | 确认 `data/screenshots/` 目录存在且运行账号可写；检查 `/screenshots/` 静态挂载是否生效 |
 | 服务重启后退出 | 确认用 systemd 常驻，而不是前台 `nohup` 后断开 SSH |
 
 ## 八、上生产前的加固建议（按需）
