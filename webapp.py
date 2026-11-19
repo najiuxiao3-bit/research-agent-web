@@ -28,6 +28,7 @@ import config
 import storage
 from agent import run
 from tools.browser import open_first_result
+from tools import quest
 
 STATIC_DIR = Path(__file__).parent / "static"
 SCREENSHOT_DIR = Path(__file__).parent / "data" / "screenshots"
@@ -44,6 +45,10 @@ class AskRequest(BaseModel):
 
 class BrowserRequest(BaseModel):
     keyword: str
+
+
+class QuestRunRequest(BaseModel):
+    id: str | None = None
 
 
 @app.on_event("startup")
@@ -194,6 +199,23 @@ def browser_open(req: BrowserRequest) -> dict:
     if not result["ok"]:
         raise HTTPException(status_code=502, detail=result.get("message") or "浏览器操作失败")
     return result
+
+
+# ---------- 任务中心：跨平台签到 / 领额度（独立链路，不写调研库） ----------
+
+@app.get("/api/quests")
+def quests_list() -> dict:
+    """任务清单 + 每个任务最近一次运行结果。"""
+    return {"quests": quest.list_quests(), "latest": storage.latest_quest_runs()}
+
+
+@app.post("/api/quests/run")
+def quests_run(req: QuestRunRequest) -> dict:
+    """运行指定任务；不传 id 则运行全部已启用任务，结果落库。"""
+    results = quest.run_all(req.id)
+    for item in results:
+        storage.save_quest_run(item)
+    return {"results": results}
 
 
 # ---------- 历史 ----------
