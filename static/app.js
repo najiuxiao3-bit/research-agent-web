@@ -1,4 +1,4 @@
-/* ===== 资料查询总结助手 · 工作台逻辑 ===== */
+/* ===== 资料查询总结助手 · 工作台逻辑（SSE 流式） ===== */
 (function () {
   "use strict";
 
@@ -53,7 +53,7 @@
       .map(
         (s) =>
           `<div class="source-card">
-            <a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a>
+            <a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}<span class="link-arrow">↗</span></a>
             ${s.snippet ? `<div class="snippet">${escapeHtml(s.snippet)}</div>` : ""}
           </div>`
       )
@@ -62,21 +62,6 @@
       <p class="sources-title">参考来源（${sources.length}）</p>
       <div class="source-grid">${items}</div>
     </div>`;
-  }
-
-  function agentCardHtml(data) {
-    const time = formatTime(data.created_at);
-    return `
-      <div class="avatar" aria-hidden="true">🤖</div>
-      <div class="card">
-        <div class="card-head">
-          <span class="name">Research Agent</span>
-          ${time ? `<span>· ${time}</span>` : ""}
-          ${data.turns ? `<span>· ${data.turns} 轮检索</span>` : ""}
-        </div>
-        <div class="answer-body">${renderMarkdown(data.answer || "")}</div>
-        ${sourcesHtml(data.sources || [])}
-      </div>`;
   }
 
   // ----- 顶栏统计 -----
@@ -101,31 +86,55 @@
     scrollBottom();
   }
 
-  function appendAgentLoading() {
-    const div = document.createElement("div");
-    div.className = "msg-agent";
-    div.innerHTML = `<div class="avatar" aria-hidden="true">🤖</div>
+  // 新建流式 Agent 卡片骨架，返回内部节点引用
+  function appendStreamCard() {
+    const root = document.createElement("div");
+    root.className = "msg-agent";
+    root.innerHTML = `
+      <div class="avatar" aria-hidden="true">🤖</div>
       <div class="card">
-        <div class="loading-line"><span class="spinner"></span> 正在联网检索与提炼，请稍候…</div>
+        <div class="card-head">
+          <span class="name">Research Agent</span>
+          <span class="stream-status">正在连接…</span>
+        </div>
+        <div class="answer-body"></div>
+        <div class="sources"></div>
       </div>`;
-    messagesInner.appendChild(div);
+    messagesInner.appendChild(root);
     scrollBottom();
-    return div;
+    return {
+      root,
+      status: root.querySelector(".stream-status"),
+      body: root.querySelector(".answer-body"),
+      sources: root.querySelector(".sources"),
+    };
   }
 
-  function replaceAgent(placeholder, html) {
-    placeholder.className = "msg-agent";
-    placeholder.innerHTML = html;
+  function renderStreaming(body, text) {
+    body.innerHTML = escapeHtml(text).replace(/\n/g, "<br>") + '<span class="cursor"></span>';
     scrollBottom();
   }
 
-  function appendError(message) {
-    const div = document.createElement("div");
-    div.className = "msg-agent msg-error";
-    div.innerHTML = `<div class="avatar" aria-hidden="true">⚠️</div>
-      <div class="card">${escapeHtml(message)}</div>`;
-    messagesInner.appendChild(div);
+  function showStreamError(card, message) {
+    card.root.classList.add("msg-error");
+    card.status.textContent = "";
+    card.body.innerHTML = escapeHtml(message);
     scrollBottom();
+  }
+
+  function agentCardHtml(data) {
+    const time = formatTime(data.created_at);
+    return `
+      <div class="avatar" aria-hidden="true">🤖</div>
+      <div class="card">
+        <div class="card-head">
+          <span class="name">Research Agent</span>
+          ${time ? `<span>· ${time}</span>` : ""}
+          ${data.turns ? `<span>· ${data.turns} 轮检索</span>` : ""}
+        </div>
+        <div class="answer-body">${renderMarkdown(data.answer || "")}</div>
+        ${sourcesHtml(data.sources || [])}
+      </div>`;
   }
 
   function renderSession(detail) {
@@ -135,13 +144,46 @@
     const wrap = document.createElement("div");
     wrap.className = "msg-agent";
     messagesInner.appendChild(wrap);
-    replaceAgent(wrap, agentCardHtml(detail));
+    wrap.innerHTML = agentCardHtml(detail);
     sessionTitle.textContent = detail.query;
+    scrollBottom();
   }
 
   function scrollBottom() {
     const box = document.querySelector(".messages");
     if (box) box.scrollTop = box.scrollHeight;
+  }
+
+  // ----- SSE 读取 -----
+  async function readSSE(resp, handlers) {
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
+
+      for (const part of parts) {
+        let event = "message";
+        let data = "";
+        for (const line of part.split("\n")) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) data += line.slice(5).trim();
+        }
+        if (!data) continue;
+        try {
+          const payload = JSON.parse(data);
+          if (handlers[event]) handlers[event](payload);
+        } catch (_) {
+          /* 忽略解析坏帧 */
+        }
+      }
+    }
   }
 
   // ----- 历史会话 -----
@@ -192,6 +234,15 @@
     }
   }
 
+  function appendError(message) {
+    const div = document.createElement("div");
+    div.className = "msg-agent msg-error";
+    div.innerHTML = `<div class="avatar" aria-hidden="true">⚠️</div>
+      <div class="card">${escapeHtml(message)}</div>`;
+    messagesInner.appendChild(div);
+    scrollBottom();
+  }
+
   function newSession() {
     if (busy) return;
     currentId = null;
@@ -202,7 +253,7 @@
     queryEl.focus();
   }
 
-  // ----- 提交提问 -----
+  // ----- 提交提问（流式） -----
   async function submit(query) {
     query = query.trim();
     if (!query || busy) return;
@@ -211,27 +262,51 @@
     submitBtn.disabled = true;
     showEmpty(false);
     appendUser(query);
-    const placeholder = appendAgentLoading();
+    const card = appendStreamCard();
+    let fullText = "";
 
     try {
-      const resp = await fetch("/api/ask", {
+      const resp = await fetch("/api/ask/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query }),
       });
-      const data = await resp.json();
+
       if (!resp.ok) {
-        replaceAgent(placeholder, `<div class="avatar" aria-hidden="true">⚠️</div>
-          <div class="card msg-error">${escapeHtml(data.detail || "请求失败")}</div>`);
+        let detail = "请求失败";
+        try {
+          const errBody = await resp.json();
+          detail = errBody.detail || detail;
+        } catch (_) {}
+        showStreamError(card, detail);
         return;
       }
-      currentId = data.id;
-      sessionTitle.textContent = query;
-      replaceAgent(placeholder, agentCardHtml(data));
-      loadHistory();
+
+      await readSSE(resp, {
+        status: (d) => {
+          card.status.textContent = d.text;
+        },
+        sources: (d) => {
+          card.sources.innerHTML = sourcesHtml(d.sources || []);
+        },
+        delta: (d) => {
+          fullText += d.text || "";
+          renderStreaming(card.body, fullText);
+        },
+        done: (d) => {
+          card.body.innerHTML = renderMarkdown(fullText);
+          const time = formatTime(d.created_at);
+          card.status.innerHTML =
+            (time ? `<span>· ${time}</span>` : "") +
+            (d.turns ? `<span>· ${d.turns} 轮检索</span>` : "");
+          currentId = d.id;
+          sessionTitle.textContent = query;
+          loadHistory();
+        },
+        error: (d) => showStreamError(card, d.detail || "模型调用失败"),
+      });
     } catch (err) {
-      replaceAgent(placeholder, `<div class="avatar" aria-hidden="true">⚠️</div>
-        <div class="card msg-error">网络错误：${escapeHtml(err.message)}</div>`);
+      showStreamError(card, `网络错误：${err.message}`);
     } finally {
       busy = false;
       submitBtn.disabled = false;
