@@ -29,6 +29,18 @@
   const viewTasks = document.getElementById("view-tasks");
   const questGrid = document.getElementById("quest-grid");
   const questRunAll = document.getElementById("quest-run-all");
+  const questAdd = document.getElementById("quest-add");
+  const questForm = document.getElementById("quest-form");
+  const questFormTitle = document.getElementById("quest-form-title");
+  const qfId = document.getElementById("qf-id");
+  const qfName = document.getElementById("qf-name");
+  const qfUrl = document.getElementById("qf-url");
+  const qfDescription = document.getElementById("qf-description");
+  const qfLoginRequired = document.getElementById("qf-login-required");
+  const qfEnabled = document.getElementById("qf-enabled");
+  const qfNote = document.getElementById("qf-note");
+  const qfSave = document.getElementById("qf-save");
+  const qfCancel = document.getElementById("qf-cancel");
   let questBusy = false;
 
   // ----- 状态 -----
@@ -271,7 +283,7 @@
     queryEl.focus();
   }
 
-  // ----- 清除：清空全部历史会话 -----
+  // ----- 清除：清空全部会话 -----
   async function clearHistory() {
     if (busy) return;
     if (!confirm("确认清空全部历史会话？将删除所有问答、来源与轨迹，不可恢复。")) return;
@@ -511,7 +523,7 @@
     if (e.key === "Enter") browserRunHandler();
   });
 
-  // ----- 任务中心：清单渲染与运行 -----
+  // ----- 任务中心：清单渲染、配置与运行 -----
   const QUEST_STATUS = {
     claim: { label: "已领取", cls: "ok" },
     already: { label: "今日已领", cls: "already" },
@@ -521,39 +533,41 @@
     pending: { label: "待运行", cls: "muted" },
   };
 
-  function questCardHtml(q, latest) {
+  function questCardHtml(p, latest) {
     const r = latest || {};
     const st = QUEST_STATUS[r.status] || QUEST_STATUS.pending;
-    const loginTag = q.login_required
+    const loginTag = p.login_required
       ? '<span class="quest-tag">需登录</span>'
       : '<span class="quest-tag free">公开</span>';
-    const disabled = !q.enabled;
+    const disabled = !p.enabled;
     const shot = r.screenshot_url
       ? `<img class="browser-shot" src="${escapeHtml(r.screenshot_url)}" alt="任务截图" onerror="this.style.display='none'">`
       : "";
     const msg = r.message ? `<div class="quest-msg">${escapeHtml(r.message)}</div>` : "";
-    const note = q.note ? `<div class="quest-note">${escapeHtml(q.note)}</div>` : "";
+    const note = p.note ? `<div class="quest-note">${escapeHtml(p.note)}</div>` : "";
     const time = r.ran_at ? `<span class="quest-time">${formatTime(r.ran_at)}</span>` : "";
 
     return `
-      <div class="quest-card" data-id="${q.id}">
+      <div class="quest-card" data-id="${p.id}">
         <div class="quest-card-head">
-          <div class="quest-name">${escapeHtml(q.name)}</div>
+          <div class="quest-name">${escapeHtml(p.name)}</div>
           <span class="quest-status ${st.cls}">${st.label}</span>
         </div>
         <div class="quest-meta">
           ${loginTag}
-          <a href="${escapeHtml(q.url)}" target="_blank" rel="noopener">${escapeHtml(q.url)}</a>
+          <a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">${escapeHtml(p.url)}</a>
           ${time}
         </div>
-        <p class="quest-desc">${escapeHtml(q.description)}</p>
+        <p class="quest-desc">${escapeHtml(p.description)}</p>
         ${note}
         ${msg}
         ${shot}
         <div class="quest-actions">
-          <button class="quest-run" data-id="${q.id}" ${disabled ? "disabled" : ""}>
+          <button class="quest-run" data-id="${p.id}" ${disabled ? "disabled" : ""}>
             ${disabled ? "待配置" : "运行"}
           </button>
+          <button class="quest-edit" data-id="${p.id}">编辑</button>
+          <button class="quest-del" data-id="${p.id}">删除</button>
         </div>
       </div>`;
   }
@@ -563,15 +577,25 @@
       const resp = await fetch("/api/quests");
       if (!resp.ok) throw new Error("清单加载失败");
       const data = await resp.json();
-      const quests = data.quests || [];
+      const platforms = data.platforms || [];
       const latest = data.latest || {};
-      if (quests.length === 0) {
-        questGrid.innerHTML = '<div class="quest-empty">暂无任务，先在 tools/quest.py 中添加平台入口。</div>';
+      if (platforms.length === 0) {
+        questGrid.innerHTML = '<div class="quest-empty">还没有配置平台，点上方「添加平台」填入网址即可。</div>';
         return;
       }
-      questGrid.innerHTML = quests.map((q) => questCardHtml(q, latest[q.id])).join("");
+      const byId = {};
+      platforms.forEach((p) => { byId[p.id] = p; });
+      questGrid.innerHTML = platforms
+        .map((p) => questCardHtml(p, latest[p.id] || latest[String(p.id)]))
+        .join("");
       questGrid.querySelectorAll(".quest-run").forEach((btn) => {
         btn.addEventListener("click", () => runQuests(btn.dataset.id));
+      });
+      questGrid.querySelectorAll(".quest-edit").forEach((btn) => {
+        btn.addEventListener("click", () => openForm(byId[Number(btn.dataset.id)]));
+      });
+      questGrid.querySelectorAll(".quest-del").forEach((btn) => {
+        btn.addEventListener("click", () => deletePlatform(btn.dataset.id));
       });
     } catch (err) {
       questGrid.innerHTML = `<div class="quest-empty">加载失败：${escapeHtml(err.message)}</div>`;
@@ -588,7 +612,7 @@
       const resp = await fetch("/api/quests/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: id || null }),
+        body: JSON.stringify({ id: id ? Number(id) : null }),
       });
       if (!resp.ok) {
         let detail = "运行失败";
@@ -610,7 +634,91 @@
     }
   }
 
+  // ----- 平台配置表单（新增 / 编辑复用） -----
+  function resetForm() {
+    qfId.value = "";
+    qfName.value = "";
+    qfUrl.value = "";
+    qfDescription.value = "";
+    qfLoginRequired.checked = true;
+    qfEnabled.checked = true;
+    qfNote.value = "";
+  }
+
+  function openForm(platform) {
+    resetForm();
+    if (platform) {
+      questFormTitle.textContent = "编辑平台";
+      qfId.value = platform.id;
+      qfName.value = platform.name;
+      qfUrl.value = platform.url;
+      qfDescription.value = platform.description || "";
+      qfLoginRequired.checked = platform.login_required;
+      qfEnabled.checked = platform.enabled;
+      qfNote.value = platform.note || "";
+    } else {
+      questFormTitle.textContent = "添加平台";
+    }
+    questForm.classList.remove("hidden");
+    qfName.focus();
+  }
+
+  function closeForm() {
+    questForm.classList.add("hidden");
+    resetForm();
+  }
+
+  async function submitForm() {
+    const payload = {
+      name: qfName.value.trim(),
+      url: qfUrl.value.trim(),
+      description: qfDescription.value.trim(),
+      login_required: qfLoginRequired.checked,
+      enabled: qfEnabled.checked,
+      note: qfNote.value.trim(),
+    };
+    if (!payload.name) { alert("请填写平台名称"); return; }
+    if (!payload.url) { alert("请填写平台网址"); return; }
+
+    const id = qfId.value;
+    const url = id ? `/api/quests/${id}` : "/api/quests";
+    const method = id ? "PUT" : "POST";
+    try {
+      const resp = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        let detail = "保存失败";
+        try {
+          const err = await resp.json();
+          detail = err.detail || detail;
+        } catch (_) {}
+        throw new Error(detail);
+      }
+      closeForm();
+      await loadQuests();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function deletePlatform(id) {
+    if (!confirm("确认删除该平台配置？历史运行记录会保留。")) return;
+    try {
+      const resp = await fetch(`/api/quests/${id}`, { method: "DELETE" });
+      if (!resp.ok) throw new Error("删除失败");
+      await loadQuests();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   questRunAll.addEventListener("click", () => runQuests(null));
+  questAdd.addEventListener("click", () => openForm(null));
+  qfCancel.addEventListener("click", closeForm);
+  qfSave.addEventListener("click", submitForm);
 
   // ----- 初始化 -----
   loadHistory();
