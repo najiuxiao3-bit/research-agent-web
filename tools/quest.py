@@ -1,0 +1,313 @@
+# -*- coding: utf-8 -*-
+"""
+跨平台签到 / 领额度任务模块（任务中心，独立于调研链路与浏览器搜索链路）。
+
+设计原则：
+- 任务清单是纯配置（QUESTS），平台入口、说明、是否需要登录都在配置里维护，
+  后续新增平台只需往 QUESTS 里加一条，无需改流程代码。
+- 通用探测：进入页面后识别“签到 / 领取 / 每日福利 / 领额度”等可点入口，
+  不把选择器写死到某个平台；命中即点击，未命中如实回传。
+- 登录保守策略：检测到登录拦截（跳转登录页、密码框、扫码、登录按钮）时，
+  标记 login_required 并交回前端，不绕过、不填写任何凭证。
+- 登录态可选持久化：使用持久化浏览器目录 data/pw-profile（已被 .gitignore 排除），
+  有头模式下人工登录一次后 cookie 保留；目录仅存本机，不上传仓库。
+
+返回结构（单条任务）：
+{
+  "ok": bool,
+  "id": str,
+  "name": str,
+  "url": str,
+  "status": "claim" | "already" | "login_required" | "not_found" | "error",
+  "message": str,
+  "detail": str,
+  "candidates": [str],
+  "screenshot_url": str,
+  "logged_in": bool,
+  "ran_at": str
+}
+"""
+
+import hashlib
+import time
+from datetime import datetime
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+import config
+
+SCREENSHOT_DIR = Path(__file__).resolve().parent.parent / "data" / "screenshots"
+PROFILE_DIR = Path(__file__).resolve().parent.parent / "data" / "pw-profile"
+
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/159.0.0.0 Safari/537.36"
+)
+
+# 领取 / 签到类按钮文案关键词（中英文）
+CLAIM_KEYWORDS = (
+    "签到", "领取", "领额度", "领福利", "每日福利", "领取奖励", "领取积分",
+    "打卡", "checkin", "check-in", "claim", "daily reward", "redeem",
+)
+# 已领取 / 已签到文案关键词
+ALREADY_KEYWORDS = ("已领取", "已签到", "已打卡", "今日已领", "已完成", "claimed", "checked in")
+# 登录拦截信号
+LOGIN_URL_HINTS = ("login", "signin", "sign-in", "oauth", "passport", "auth")
+LOGIN_TEXT_HINTS = ("扫码登录", "账号登录", "密码登录", "手机验证码登录", "请登录", "登录后")
+LOGIN_INPUT_SELECTORS = ("input[type='password']", "input[placeholder*='密码']", "input[placeholder*='验证码']")
+
+# ---------------------------------------------------------------------------
+# 任务清单（配置区）
+# ---------------------------------------------------------------------------
+# 字段说明：
+#   id          唯一标识
+#   name        平台 / 任务名（前端卡片标题）
+#   url         进入地址
+#   description 任务说明（前端卡片副文案）
+#   login_required 该平台是否需要登录
+#   enabled     是否纳入“全部运行”；False 表示占位模板，先不执行
+#   note        补充提示（如需要人工确认的入口）
+#
+# 注意：下面是结构模板。真实平台的入口文案 / 选择器以实际页面为准，
+# 添加时先在本地有头模式跑通，再把 enabled 置为 True。
+QUESTS: list[dict] = [
+    {
+        "id": "example-template",
+        "name": "示例平台（待配置）",
+        "url": "https://example.com",
+        "description": "把这一条替换成真实平台官网地址；进入后会自动探测签到 / 领取入口。",
+        "login_required": True,
+        "enabled": False,
+        "note": "占位模板：未配置真实入口前不会执行。",
+    },
+]
+
+
+def list_quests() -> list[dict]:
+    """对外返回任务清单（去掉运行期内部字段）。"""
+    return [
+        {
+            "id": q["id"],
+            "name": q["name"],
+            "url": q["url"],
+            "description": q.get("description", ""),
+            "login_required": q.get("login_required", True),
+            "enabled": q.get("enabled", True),
+            "note": q.get("note", ""),
+        }
+        for q in QUESTS
+    ]
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _detect_login(page) -> tuple[bool, str]:
+    """判断当前是否被登录拦截，返回 (是否需登录, 依据说明)。"""
+    url = (page.url or "").lower()
+    if any(h in url for h in LOGIN_URL_HINTS):
+        return True, "页面跳转到了登录 / 授权地址"
+
+    for sel in LOGIN_INPUT_SELECTORS:
+        try:
+            if page.locator(sel).count() > 0:
+                return True, "页面出现密码 / 验证码输入框"
+        except Exception:
+            continue
+
+    try:
+        body_text = page.locator("body").first.inner_text()[:1200]
+        for hint in LOGIN_TEXT_HINTS:
+            if hint in body_text:
+                return True, f"页面出现登录引导（{hint}）"
+    except Exception:
+        pass
+
+    return False, ""
+
+
+def _find_claim_candidates(page) -> list[dict]:
+    """收集页面上疑似领取 / 签到的可点元素，返回 [{text, locator}]。"""
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    selectors = ["button", "a", "[role='button']", ".btn", "[class*='sign']", "[class*='claim']"]
+
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            count = loc.count()
+        except Exception:
+            continue
+        for i in range(min(count, 40)):
+            try:
+                el = loc.nth(i)
+                if not el.is_visible():
+                    continue
+                text = (el.inner_text() or "").strip().replace("\n", " ")
+                if not text or len(text) > 30:
+                    continue
+                key = text.lower()
+                if not any(k in key for k in CLAIM_KEYWORDS):
+                    continue
+                if text in seen:
+                    continue
+                seen.add(text)
+                candidates.append({"text": text, "locator": el})
+            except Exception:
+                continue
+    return candidates
+
+
+def _detect_already(page) -> str:
+    """检测页面是否已显示已领取 / 已签到状态。"""
+    try:
+        body_text = page.locator("body").first.inner_text()[:1500]
+        for hint in ALREADY_KEYWORDS:
+            if hint in body_text:
+                return hint
+    except Exception:
+        pass
+    return ""
+
+
+def _shoot(page, quest_id: str) -> str:
+    """截图并返回静态访问路径；失败返回空串，不阻断主流程。"""
+    try:
+        SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        fname = (
+            f"quest_{int(time.time())}_"
+            f"{hashlib.md5(quest_id.encode('utf-8')).hexdigest()[:8]}.png"
+        )
+        page.screenshot(path=str(SCREENSHOT_DIR / fname), full_page=False, type="png")
+        return f"/screenshots/{fname}"
+    except Exception:
+        return ""
+
+
+def run_quest(quest: dict) -> dict:
+    """执行单个签到 / 领额度任务，返回结果 dict。"""
+    base = {
+        "ok": False,
+        "id": quest["id"],
+        "name": quest["name"],
+        "url": quest["url"],
+        "status": "error",
+        "message": "",
+        "detail": "",
+        "candidates": [],
+        "screenshot_url": "",
+        "logged_in": False,
+        "ran_at": _now(),
+    }
+
+    if not quest.get("enabled", True):
+        base["status"] = "not_found"
+        base["message"] = "该任务为占位模板，尚未配置真实平台入口。"
+        return base
+
+    try:
+        with sync_playwright() as p:
+            # 持久化浏览器目录：有头登录一次后保留 cookie（目录仅本机、已 gitignore）
+            PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(PROFILE_DIR),
+                headless=config.BROWSER_HEADLESS,
+                user_agent=_UA,
+                viewport={"width": 1280, "height": 900},
+                locale="zh-CN",
+            )
+            page = context.new_page()
+
+            page.goto(quest["url"], timeout=config.REQUEST_TIMEOUT * 1000)
+            page.wait_for_load_state("domcontentloaded", timeout=config.REQUEST_TIMEOUT * 1000)
+            page.wait_for_timeout(1200)
+
+            # 1. 登录拦截识别
+            login_blocked, reason = _detect_login(page)
+            base["logged_in"] = not login_blocked
+            shot = _shoot(page, quest["id"])
+            base["screenshot_url"] = shot
+
+            if login_blocked:
+                base["status"] = "login_required"
+                base["message"] = "需要登录后才能领取。当前未自动登录，请在浏览器内完成登录后再运行。"
+                base["detail"] = reason
+                context.close()
+                return base
+
+            # 2. 是否已领取
+            already_hint = _detect_already(page)
+            if already_hint:
+                base["status"] = "already"
+                base["message"] = f"今日已领取 / 已签到（页面显示“{already_hint}”），无需重复操作。"
+                context.close()
+                return base
+
+            # 3. 探测可领取入口
+            candidates = _find_claim_candidates(page)
+            base["candidates"] = [c["text"] for c in candidates]
+
+            if not candidates:
+                base["status"] = "not_found"
+                base["message"] = "已进入页面，但未发现可领取 / 签到入口；可能今日已领、入口在二级页面，或需人工确认。"
+                context.close()
+                return base
+
+            # 4. 点击第一个候选入口
+            target = candidates[0]
+            try:
+                target["locator"].scroll_into_view_if_needed(timeout=2000)
+                target["locator"].click(timeout=3000)
+                page.wait_for_timeout(1200)
+                base["status"] = "claim"
+                base["message"] = f"已点击“{target['text']}”，请查看页面反馈确认是否到账。"
+                base["detail"] = f"候选入口：{', '.join(c['text'] for c in candidates)}"
+            except Exception as exc:
+                base["status"] = "not_found"
+                base["message"] = "找到了疑似入口，但点击未成功，可能被遮挡或需要人工操作。"
+                base["detail"] = f"{type(exc).__name__}: {exc}"
+
+            base["screenshot_url"] = _shoot(page, quest["id"] + "_after")
+            context.close()
+
+        base["ok"] = True
+        return base
+
+    except PWTimeout:
+        base["message"] = "页面加载超时，站点响应过慢或被拦截。"
+        return base
+    except Exception as exc:
+        base["message"] = f"任务执行异常：{type(exc).__name__}: {exc}"
+        return base
+
+
+def run_all(quest_id: str | None = None) -> list[dict]:
+    """运行指定任务；不传 id 时运行全部已启用任务。"""
+    if quest_id:
+        target = next((q for q in QUESTS if q["id"] == quest_id), None)
+        if target is None:
+            return [{**base_result(quest_id), "message": "任务不存在。"}]
+        return [run_quest(target)]
+
+    results = []
+    for q in QUESTS:
+        results.append(run_quest(q))
+    return results
+
+
+def base_result(quest_id: str) -> dict:
+    return {
+        "ok": False,
+        "id": quest_id,
+        "name": "",
+        "url": "",
+        "status": "error",
+        "message": "",
+        "detail": "",
+        "candidates": [],
+        "screenshot_url": "",
+        "logged_in": False,
+        "ran_at": _now(),
+    }
