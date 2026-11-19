@@ -13,6 +13,16 @@
   const modelBadge = document.getElementById("model-badge");
   const statBadge = document.getElementById("stat-badge");
 
+  // ----- 视图切换与浏览器自动化（独立功能，不参与调研链路） -----
+  const sidebar = document.getElementById("sidebar");
+  const viewTabs = document.getElementById("view-tabs");
+  const viewResearch = document.getElementById("view-research");
+  const viewBrowser = document.getElementById("view-browser");
+  const browserKeyword = document.getElementById("browser-keyword");
+  const browserRun = document.getElementById("browser-run");
+  const browserResult = document.getElementById("browser-result");
+  let browserBusy = false;
+
   // ----- 状态 -----
   let currentId = null;
   let busy = false;
@@ -340,6 +350,92 @@
     queryEl.value = chip.dataset.question || "";
     autoGrow();
     submit(queryEl.value);
+  });
+
+  // ----- 视图切换 -----
+  function switchView(view) {
+    const isResearch = view === "research";
+    viewResearch.classList.toggle("hidden", !isResearch);
+    viewBrowser.classList.toggle("hidden", isResearch);
+    sidebar.classList.toggle("hidden", !isResearch);
+    viewTabs.querySelectorAll(".tab").forEach((t) => {
+      t.classList.toggle("active", t.dataset.view === view);
+    });
+    if (isResearch) {
+      modelBadge.textContent = "Research Agent";
+    } else {
+      modelBadge.textContent = "Browser Tool";
+      sessionTitle.textContent = "浏览器自动化";
+      browserKeyword.focus();
+    }
+  }
+
+  viewTabs.addEventListener("click", (e) => {
+    const tab = e.target.closest(".tab");
+    if (tab) switchView(tab.dataset.view);
+  });
+
+  // ----- 浏览器自动化：直接调独立后端接口，不走 Agent、不写调研历史 -----
+  function browserRunHandler() {
+    const keyword = browserKeyword.value.trim();
+    if (!keyword || browserBusy) return;
+
+    browserBusy = true;
+    browserRun.disabled = true;
+    browserResult.innerHTML =
+      '<div class="browser-status"><div class="spinner"></div> 正在打开百度并进入第一条结果，请稍候…</div>';
+
+    fetch("/api/browser/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keyword }),
+    })
+      .then(async (resp) => {
+        if (!resp.ok) {
+          let detail = "浏览器操作失败";
+          try {
+            const err = await resp.json();
+            detail = err.detail || detail;
+          } catch (_) {}
+          throw new Error(detail);
+        }
+        return resp.json();
+      })
+      .then((data) => {
+        const title = escapeHtml(data.title || "无标题");
+        const url = escapeHtml(data.url || "");
+        const content = escapeHtml(data.content || "");
+        const msg = data.message
+          ? `<div class="browser-note">${escapeHtml(data.message)}</div>`
+          : "";
+        browserResult.innerHTML = `
+          <div class="browser-card">
+            <div class="browser-card-head">
+              <span class="name">抓取结果</span>
+              <span class="time">关键词：${escapeHtml(keyword)}</span>
+            </div>
+            <a class="browser-title" href="${url}" target="_blank" rel="noopener">${title}<span class="link-arrow">↗</span></a>
+            ${url ? `<div class="browser-url">${url}</div>` : ""}
+            <div class="browser-body">${content || '<span class="muted">未抽取到正文。</span>'}</div>
+            ${msg}
+          </div>`;
+      })
+      .catch((err) => {
+        browserResult.innerHTML = `
+          <div class="browser-card browser-error">
+            <div class="browser-card-head"><span>⚠️ 运行失败</span></div>
+            <div>${escapeHtml(err.message)}</div>
+          </div>`;
+      })
+      .finally(() => {
+        browserBusy = false;
+        browserRun.disabled = false;
+      });
+  }
+
+  browserRun.addEventListener("click", browserRunHandler);
+  browserKeyword.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") browserRunHandler();
   });
 
   // ----- 初始化 -----
