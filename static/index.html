@@ -3,43 +3,67 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>资料查询总结助手</title>
+  <title>资料查询总结助手 · 工作台</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="logo" aria-hidden="true">🔍</div>
-      <div>
-        <h1>资料查询总结助手</h1>
-        <p>输入问题 → 联网检索 → 提炼带来源的中文摘要</p>
+  <div class="workbench">
+    <!-- 左侧会话侧栏 -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">🔍</div>
+        <div>
+          <div class="name">资料查询助手</div>
+          <div class="sub">Research Agent</div>
+        </div>
       </div>
-      <span class="badge">Agent · FastAPI</span>
-    </div>
-  </header>
 
-  <div class="container">
-    <div class="layout">
-      <aside class="card history">
-        <h2>历史记录</h2>
+      <button id="new-btn" class="new-btn">＋ 新建调研</button>
+
+      <div class="side-title">历史会话</div>
+      <div class="history-scroll">
         <ul id="history-list"><li class="empty">加载中…</li></ul>
-      </aside>
+      </div>
 
-      <section class="card composer">
-        <form id="ask-form">
-          <textarea id="query" placeholder="例如：2025 年大模型开源生态有哪些代表性进展？" maxlength="1000"></textarea>
-          <div class="actions">
-            <button type="submit" id="submit-btn" class="btn">开始调研</button>
-            <span id="status"></span>
+      <div class="side-footer">
+        <span class="status-dot"></span>
+        <span>服务在线 · SQLite 持久化</span>
+      </div>
+    </aside>
+
+    <!-- 右侧工作区 -->
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title" id="session-title">新的调研</div>
+        <div class="topbar-meta">
+          <span class="badge primary" id="model-badge">Research Agent</span>
+          <span class="badge" id="stat-badge"></span>
+        </div>
+      </header>
+
+      <section class="messages">
+        <div class="messages-inner" id="messages-inner"></div>
+
+        <div class="empty-state" id="empty-state">
+          <div class="big-logo" aria-hidden="true">🔍</div>
+          <h2>开始一次资料调研</h2>
+          <p>输入问题，Agent 会联网检索多轮资料，提炼带来源的中文摘要。</p>
+          <div class="chips">
+            <button class="chip" data-question="2025 年大模型开源生态有哪些代表性进展？">开源大模型进展</button>
+            <button class="chip" data-question="什么是 RAG？它解决了大模型的什么问题？">什么是 RAG</button>
+            <button class="chip" data-question="向量数据库的主要用途和常见产品有哪些？">向量数据库</button>
           </div>
-        </form>
-
-        <div id="result" hidden>
-          <div class="answer-card" id="answer"></div>
-          <div class="sources" id="sources"></div>
         </div>
       </section>
-    </div>
+
+      <footer class="composer">
+        <div class="composer-box">
+          <textarea id="query" placeholder="输入要调研的问题…" maxlength="1000"></textarea>
+          <button id="submit-btn" class="send-btn">发送</button>
+        </div>
+        <div class="composer-hint">Enter 发送 · Shift+Enter 换行</div>
+      </footer>
+    </main>
   </div>
 
   <script src="/static/app.js" defer></script>
