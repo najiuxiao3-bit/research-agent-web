@@ -6,7 +6,7 @@ FastAPI Web 后端：把命令行 Agent 包装成可交互的 HTTP 服务。
     GET  /                  前端页面
     POST /api/ask           一次性返回完整结果（回退兼容）
     POST /api/ask/stream    SSE 事件流：状态 → 答案分片 → 来源 → 完成
-    POST /api/browser/open  独立浏览器自动化（不走 Agent、不落库）
+    POST /api/browser/open  独立浏览器自动化（不进 Agent 循环、不写调研库）
     GET  /api/history       历史记录列表
     GET  /api/history/{id}  单条记录详情
 
@@ -30,9 +30,12 @@ from agent import run
 from tools.browser import open_first_result
 
 STATIC_DIR = Path(__file__).parent / "static"
+SCREENSHOT_DIR = Path(__file__).parent / "data" / "screenshots"
+SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="资料查询总结助手")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/screenshots", StaticFiles(directory=SCREENSHOT_DIR), name="screenshots")
 
 
 class AskRequest(BaseModel):
@@ -177,7 +180,7 @@ def ask_stream(req: AskRequest) -> StreamingResponse:
     )
 
 
-# ---------- 独立浏览器自动化（不经过 Agent、不写调研库） ----------
+# ---------- 独立浏览器自动化（不进 Agent 循环、不写调研库） ----------
 
 @app.post("/api/browser/open")
 def browser_open(req: BrowserRequest) -> dict:
