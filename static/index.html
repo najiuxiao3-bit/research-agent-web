@@ -112,12 +112,50 @@
             <div class="browser-hero">
               <div class="browser-hero-icon" aria-hidden="true">🎁</div>
               <h2>任务中心</h2>
-              <p>跨平台签到 / 领额度自动化：进入配置的平台，探测签到与领取入口，回传状态与截图。需要登录的平台会先提示登录，不自动填写凭证。</p>
+              <p>在页面上配置要签到 / 领额度的平台，自动进入并探测领取入口，回传状态与截图。需要登录的平台会弹出浏览器，请你扫码；扫码一次后 cookie 保存在本地目录，后续自动复用。</p>
+            </div>
+
+            <div class="quest-login-note">
+              <span class="note-dot"></span>
+              首次进入需登录的平台请在弹出的窗口完成扫码；本地持久目录会保留登录态，下次运行无需重复扫码。系统不会填写账号密码或验证码。
             </div>
 
             <div class="quest-toolbar">
               <button id="quest-run-all" class="send-btn">全部运行</button>
-              <span class="quest-tip">任务清单在 <code>tools/quest.py</code> 的 QUESTS 中维护</span>
+              <button id="quest-add" class="ghost-btn">＋ 添加平台</button>
+              <span class="quest-tip">配置保存在本地 SQLite，不会随仓库上传</span>
+            </div>
+
+            <!-- 平台配置表单（新增 / 编辑复用） -->
+            <div id="quest-form" class="quest-form hidden">
+              <div class="quest-form-title" id="quest-form-title">添加平台</div>
+              <input type="hidden" id="qf-id" />
+              <div class="quest-form-row">
+                <label class="field">
+                  <span>平台名称</span>
+                  <input id="qf-name" type="text" maxlength="60" placeholder="如：某 AI 工具官网" />
+                </label>
+                <label class="field">
+                  <span>平台网址</span>
+                  <input id="qf-url" type="text" maxlength="300" placeholder="https://example.com" />
+                </label>
+              </div>
+              <label class="field">
+                <span>平台说明</span>
+                <input id="qf-description" type="text" maxlength="200" placeholder="这个平台要领取什么 / 入口大概在哪" />
+              </label>
+              <div class="quest-form-row check-row">
+                <label class="check"><input id="qf-login-required" type="checkbox" checked /> 需要登录后领取</label>
+                <label class="check"><input id="qf-enabled" type="checkbox" checked /> 启用（纳入全部运行）</label>
+              </div>
+              <label class="field">
+                <span>备注（可选）</span>
+                <textarea id="qf-note" rows="2" maxlength="200" placeholder="补充提示，如入口在二级页面、需人工确认等"></textarea>
+              </label>
+              <div class="quest-form-actions">
+                <button id="qf-save" class="send-btn">保存配置</button>
+                <button id="qf-cancel" class="ghost-btn">取消</button>
+              </div>
             </div>
 
             <div id="quest-grid" class="quest-grid"></div>
