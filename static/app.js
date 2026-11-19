@@ -1,16 +1,22 @@
-/* ===== 资料查询总结助手 · 前端逻辑 ===== */
+/* ===== 资料查询总结助手 · 工作台逻辑 ===== */
 (function () {
   "use strict";
 
   // ----- DOM 缓存 -----
-  const form = document.getElementById("ask-form");
-  const queryEl = document.getElementById("query");
-  const statusEl = document.getElementById("status");
-  const resultEl = document.getElementById("result");
-  const answerEl = document.getElementById("answer");
-  const sourcesEl = document.getElementById("sources");
   const historyList = document.getElementById("history-list");
+  const newBtn = document.getElementById("new-btn");
+  const messagesInner = document.getElementById("messages-inner");
+  const emptyState = document.getElementById("empty-state");
+  const queryEl = document.getElementById("query");
   const submitBtn = document.getElementById("submit-btn");
+  const sessionTitle = document.getElementById("session-title");
+  const modelBadge = document.getElementById("model-badge");
+  const statBadge = document.getElementById("stat-badge");
+
+  // ----- 状态 -----
+  let currentId = null;
+  let busy = false;
+  let sessions = [];
 
   // ----- 工具函数 -----
   function escapeHtml(text) {
@@ -21,7 +27,11 @@
       .replace(/"/g, "&quot;");
   }
 
-  // 轻量 Markdown：标题、加粗、链接、列表、换行
+  function formatTime(iso) {
+    if (!iso) return "";
+    return String(iso).replace("T", " ").slice(0, 16);
+  }
+
   function renderMarkdown(text) {
     let html = escapeHtml(text);
     html = html.replace(/^### (.*)$/gm, "<h4>$1</h4>");
@@ -37,12 +47,8 @@
     return html;
   }
 
-  function renderSources(sources) {
-    if (!sources || sources.length === 0) {
-      sourcesEl.innerHTML =
-        '<h2>参考来源</h2><p class="empty">本次未取到可靠来源。</p>';
-      return;
-    }
+  function sourcesHtml(sources) {
+    if (!sources || sources.length === 0) return "";
     const items = sources
       .map(
         (s) =>
@@ -52,87 +58,160 @@
           </div>`
       )
       .join("");
-    sourcesEl.innerHTML = `<h2>参考来源（${sources.length}）</h2><div class="source-grid">${items}</div>`;
+    return `<div class="sources">
+      <p class="sources-title">参考来源（${sources.length}）</p>
+      <div class="source-grid">${items}</div>
+    </div>`;
   }
 
-  function showResult(data) {
-    resultEl.hidden = false;
-    answerEl.innerHTML = renderMarkdown(data.answer || "");
-    renderSources(data.sources || []);
+  function agentCardHtml(data) {
+    const time = formatTime(data.created_at);
+    return `
+      <div class="avatar" aria-hidden="true">🤖</div>
+      <div class="card">
+        <div class="card-head">
+          <span class="name">Research Agent</span>
+          ${time ? `<span>· ${time}</span>` : ""}
+          ${data.turns ? `<span>· ${data.turns} 轮检索</span>` : ""}
+        </div>
+        <div class="answer-body">${renderMarkdown(data.answer || "")}</div>
+        ${sourcesHtml(data.sources || [])}
+      </div>`;
   }
 
-  function setStatus(message, isError) {
-    statusEl.textContent = message || "";
-    statusEl.className = isError ? "error" : "";
+  // ----- 顶栏统计 -----
+  function refreshBadges() {
+    const totalSources = sessions.reduce((sum, r) => sum + (r.n_sources || 0), 0);
+    const model = (sessions[0] && sessions[0].model) || "Research Agent";
+    modelBadge.textContent = model;
+    statBadge.textContent = `${sessions.length} 个会话 · ${totalSources} 条来源`;
   }
 
-  function setLoading(loading) {
-    submitBtn.disabled = loading;
-    submitBtn.innerHTML = loading
-      ? '<span class="spinner"></span> 检索中…'
-      : "开始调研";
+  // ----- 消息流 -----
+  function showEmpty(show) {
+    emptyState.style.display = show ? "block" : "none";
+    messagesInner.style.display = show ? "none" : "flex";
   }
 
-  // ----- 历史记录 -----
-  function markActive(id) {
-    historyList.querySelectorAll("li[data-id]").forEach((li) => {
-      li.classList.toggle("active", Number(li.dataset.id) === id);
-    });
+  function appendUser(text) {
+    const div = document.createElement("div");
+    div.className = "msg-user";
+    div.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+    messagesInner.appendChild(div);
+    scrollBottom();
   }
 
+  function appendAgentLoading() {
+    const div = document.createElement("div");
+    div.className = "msg-agent";
+    div.innerHTML = `<div class="avatar" aria-hidden="true">🤖</div>
+      <div class="card">
+        <div class="loading-line"><span class="spinner"></span> 正在联网检索与提炼，请稍候…</div>
+      </div>`;
+    messagesInner.appendChild(div);
+    scrollBottom();
+    return div;
+  }
+
+  function replaceAgent(placeholder, html) {
+    placeholder.className = "msg-agent";
+    placeholder.innerHTML = html;
+    scrollBottom();
+  }
+
+  function appendError(message) {
+    const div = document.createElement("div");
+    div.className = "msg-agent msg-error";
+    div.innerHTML = `<div class="avatar" aria-hidden="true">⚠️</div>
+      <div class="card">${escapeHtml(message)}</div>`;
+    messagesInner.appendChild(div);
+    scrollBottom();
+  }
+
+  function renderSession(detail) {
+    messagesInner.innerHTML = "";
+    showEmpty(false);
+    appendUser(detail.query);
+    const wrap = document.createElement("div");
+    wrap.className = "msg-agent";
+    messagesInner.appendChild(wrap);
+    replaceAgent(wrap, agentCardHtml(detail));
+    sessionTitle.textContent = detail.query;
+  }
+
+  function scrollBottom() {
+    const box = document.querySelector(".messages");
+    if (box) box.scrollTop = box.scrollHeight;
+  }
+
+  // ----- 历史会话 -----
   async function loadHistory() {
     try {
       const resp = await fetch("/api/history");
       const data = await resp.json();
-      const records = data.records || [];
-      if (records.length === 0) {
-        historyList.innerHTML = '<li class="empty">暂无历史记录</li>';
+      sessions = data.records || [];
+      refreshBadges();
+
+      if (sessions.length === 0) {
+        historyList.innerHTML = '<li class="empty" style="padding:8px 12px;">暂无历史会话</li>';
         return;
       }
-      historyList.innerHTML = records
+      historyList.innerHTML = sessions
         .map(
-          (r) => `<li data-id="${r.id}">
+          (r) => `<li data-id="${r.id}" class="${r.id === currentId ? "active" : ""}">
             <div class="q">${escapeHtml(r.query)}</div>
             <div class="meta">
-              <span>${escapeHtml(r.created_at)}</span>
+              <span>${formatTime(r.created_at)}</span>
               <span class="tag">${r.n_sources} 条来源</span>
             </div>
           </li>`
         )
         .join("");
       historyList.querySelectorAll("li[data-id]").forEach((li) => {
-        li.addEventListener("click", () => loadDetail(Number(li.dataset.id)));
+        li.addEventListener("click", () => selectSession(Number(li.dataset.id)));
       });
     } catch (err) {
-      historyList.innerHTML = '<li class="empty">历史加载失败</li>';
+      historyList.innerHTML = '<li class="empty" style="padding:8px 12px;">历史加载失败</li>';
     }
   }
 
-  async function loadDetail(id) {
-    setStatus("");
+  async function selectSession(id) {
+    if (busy || id === currentId) return;
     try {
       const resp = await fetch(`/api/history/${id}`);
       if (!resp.ok) {
-        setStatus("记录加载失败", true);
+        appendError("记录加载失败");
         return;
       }
       const rec = await resp.json();
-      markActive(id);
-      showResult(rec);
+      currentId = id;
+      renderSession(rec);
+      loadHistory();
     } catch (err) {
-      setStatus(`网络错误：${err.message}`, true);
+      appendError(`网络错误：${err.message}`);
     }
   }
 
-  // ----- 提交提问 -----
-  async function handleSubmit(e) {
-    e.preventDefault();
-    const query = queryEl.value.trim();
-    if (!query) return;
+  function newSession() {
+    if (busy) return;
+    currentId = null;
+    messagesInner.innerHTML = "";
+    showEmpty(true);
+    sessionTitle.textContent = "新的调研";
+    loadHistory();
+    queryEl.focus();
+  }
 
-    setLoading(true);
-    setStatus("检索与提炼中，可能需要十几秒…");
-    resultEl.hidden = true;
+  // ----- 提交提问 -----
+  async function submit(query) {
+    query = query.trim();
+    if (!query || busy) return;
+
+    busy = true;
+    submitBtn.disabled = true;
+    showEmpty(false);
+    appendUser(query);
+    const placeholder = appendAgentLoading();
 
     try {
       const resp = await fetch("/api/ask", {
@@ -142,20 +221,52 @@
       });
       const data = await resp.json();
       if (!resp.ok) {
-        setStatus(data.detail || "请求失败", true);
+        replaceAgent(placeholder, `<div class="avatar" aria-hidden="true">⚠️</div>
+          <div class="card msg-error">${escapeHtml(data.detail || "请求失败")}</div>`);
         return;
       }
-      setStatus("");
-      markActive(data.id);
-      showResult(data);
+      currentId = data.id;
+      sessionTitle.textContent = query;
+      replaceAgent(placeholder, agentCardHtml(data));
       loadHistory();
     } catch (err) {
-      setStatus(`网络错误：${err.message}`, true);
+      replaceAgent(placeholder, `<div class="avatar" aria-hidden="true">⚠️</div>
+        <div class="card msg-error">网络错误：${escapeHtml(err.message)}</div>`);
     } finally {
-      setLoading(false);
+      busy = false;
+      submitBtn.disabled = false;
+      queryEl.value = "";
+      autoGrow();
     }
   }
 
-  form.addEventListener("submit", handleSubmit);
+  // ----- 输入框自适应高度 -----
+  function autoGrow() {
+    queryEl.style.height = "auto";
+    queryEl.style.height = Math.min(queryEl.scrollHeight, 160) + "px";
+  }
+
+  // ----- 事件绑定 -----
+  submitBtn.addEventListener("click", () => submit(queryEl.value));
+
+  queryEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit(queryEl.value);
+    }
+  });
+  queryEl.addEventListener("input", autoGrow);
+
+  newBtn.addEventListener("click", newSession);
+
+  emptyState.addEventListener("click", (e) => {
+    const chip = e.target.closest(".chip");
+    if (!chip) return;
+    queryEl.value = chip.dataset.question || "";
+    autoGrow();
+    submit(queryEl.value);
+  });
+
+  // ----- 初始化 -----
   loadHistory();
 })();
