@@ -209,3 +209,19 @@ def detail(record_id: int) -> dict:
     if record is None:
         raise HTTPException(status_code=404, detail="记录不存在")
     return record
+
+
+# ---------- 清除 ----------
+
+@app.delete("/api/history")
+def clear_history() -> dict:
+    """清空全部历史会话（连同答案、来源、轨迹一并删除）。"""
+    deleted = storage.clear_all_records()
+    return {"ok": True, "deleted": deleted}
+
+
+@app.delete("/api/sources")
+def clear_sources() -> dict:
+    """清空所有记录保存的来源引用，保留问答正文与轨迹。"""
+    cleared = storage.clear_sources()
+    return {"ok": True, "cleared": cleared}
