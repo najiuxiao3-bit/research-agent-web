@@ -12,6 +12,8 @@
   const sessionTitle = document.getElementById("session-title");
   const modelBadge = document.getElementById("model-badge");
   const statBadge = document.getElementById("stat-badge");
+  const clearSessionsBtn = document.getElementById("clear-sessions-btn");
+  const clearSourcesBtn = document.getElementById("clear-sources-btn");
 
   // ----- 视图切换与浏览器自动化（独立功能，不参与调研链路） -----
   const sidebar = document.getElementById("sidebar");
@@ -263,6 +265,42 @@
     queryEl.focus();
   }
 
+  // ----- 清除：清空全部会话 -----
+  async function clearHistory() {
+    if (busy) return;
+    if (!confirm("确认清空全部历史会话？将删除所有问答、来源与轨迹，不可恢复。")) return;
+    try {
+      const resp = await fetch("/api/history", { method: "DELETE" });
+      if (!resp.ok) throw new Error("清空会话失败");
+      currentId = null;
+      sessions = [];
+      messagesInner.innerHTML = "";
+      showEmpty(true);
+      sessionTitle.textContent = "新的调研";
+      refreshBadges();
+      await loadHistory();
+    } catch (err) {
+      appendError(err.message);
+    }
+  }
+
+  // ----- 清除：清空所有会话保存的来源引用（保留问答正文与轨迹） -----
+  async function clearSources() {
+    if (busy) return;
+    if (!confirm("确认清空所有会话保存的来源引用？问答正文与轨迹会保留。")) return;
+    try {
+      const resp = await fetch("/api/sources", { method: "DELETE" });
+      if (!resp.ok) throw new Error("清空来源失败");
+      await loadHistory();
+      if (currentId != null) {
+        const r = await fetch(`/api/history/${currentId}`);
+        if (r.ok) renderSession(await r.json());
+      }
+    } catch (err) {
+      appendError(err.message);
+    }
+  }
+
   // ----- 提交提问（流式） -----
   async function submit(query) {
     query = query.trim();
@@ -343,6 +381,8 @@
   queryEl.addEventListener("input", autoGrow);
 
   newBtn.addEventListener("click", newSession);
+  clearSessionsBtn.addEventListener("click", clearHistory);
+  clearSourcesBtn.addEventListener("click", clearSources);
 
   emptyState.addEventListener("click", (e) => {
     const chip = e.target.closest(".chip");
