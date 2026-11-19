@@ -59,6 +59,8 @@ CLAIM_KEYWORDS = (
     "签到", "领取", "领额度", "领福利", "每日福利", "领取奖励", "领取积分",
     "打卡", "checkin", "check-in", "claim", "daily reward", "redeem",
 )
+# 积分 / 额度 / 余额 / 权益类入口（状态展示按钮，点进去再找可领取项）
+BALANCE_KEYWORDS = ("积分", "额度", "余额", "福利", "权益", "reward")
 # 已领取 / 已签到文案关键词
 ALREADY_KEYWORDS = ("已领取", "已签到", "已打卡", "今日已领", "已完成", "claimed", "checked in")
 # 登录拦截信号
@@ -69,6 +71,10 @@ LOGIN_INPUT_SELECTORS = ("input[type='password']", "input[placeholder*='密码']
 LOGIN_BUTTON_HINTS = ("登录", "立即登录", "登录/注册", "登录注册", "sign in", "log in", "sign up")
 # 命中这些词视为“已登录态下的退出入口”，不能当成登录拦截
 LOGIN_EXCLUDE_HINTS = ("退出登录", "退出", "登出", "注销", "logout")
+# 关闭 / 跳过引导弹窗的安全文案（纯关闭、不推进业务）
+DISMISS_BUTTON_HINTS = ("我知道了", "知道了", "暂不", "跳过", "稍后", "先逛逛", "先不用", "下次再说", "关闭")
+# 弹窗里明确不点的推进 / 跳转 / 确认类主按钮
+CONFIRM_EXCLUDE_HINTS = ("去看看", "立即开工", "立即升级", "立即领取", "确认", "创建", "提交", "同意", "领取", "签到")
 
 
 def _now() -> str:
@@ -168,9 +174,10 @@ def _wait_for_login(page) -> tuple[bool, str]:
 
 
 def _find_claim_candidates(page) -> list[dict]:
-    """收集页面上疑似领取 / 签到的可点元素，返回 [{text, locator}]。"""
+    """收集页面上疑似领取 / 签到 / 积分额度的可点元素，返回 [{text, locator}]。"""
     candidates: list[dict] = []
     seen: set[str] = set()
+    entry_keywords = CLAIM_KEYWORDS + BALANCE_KEYWORDS
     selectors = ["button", "a", "[role='button']", ".btn", "[class*='sign']", "[class*='claim']"]
 
     for sel in selectors:
@@ -188,7 +195,7 @@ def _find_claim_candidates(page) -> list[dict]:
                 if not text or len(text) > 30:
                     continue
                 key = text.lower()
-                if not any(k in key for k in CLAIM_KEYWORDS):
+                if not any(k in key for k in entry_keywords):
                     continue
                 if text in seen:
                     continue
@@ -209,6 +216,95 @@ def _detect_already(page) -> str:
     except Exception:
         pass
     return ""
+
+
+OVERLAY_SELECTORS = (
+    "[role='dialog']", ".modal", "[class*='modal']", "[class*='Modal']",
+    "[class*='dialog']", "[class*='Dialog']",
+)
+
+
+def _safe_click(el) -> bool:
+    """滚动到可视区后标准点击；被遮挡 / 在视口外时回退 JS click。成功返回 True。"""
+    try:
+        el.scroll_into_view_if_needed(timeout=1000)
+    except Exception:
+        pass
+    try:
+        el.click(timeout=1500)
+        return True
+    except Exception:
+        try:
+            el.evaluate("e => e.click()")
+            return True
+        except Exception:
+            return False
+
+
+def _visible_overlays(page) -> list:
+    """返回当前可见的弹窗 / 遮罩容器列表。"""
+    overlays = []
+    for sel in OVERLAY_SELECTORS:
+        try:
+            loc = page.locator(sel)
+            for i in range(min(loc.count(), 4)):
+                el = loc.nth(i)
+                if el.is_visible():
+                    overlays.append(el)
+        except Exception:
+            continue
+    return overlays
+
+
+def _dismiss_overlays(page) -> list[str]:
+    """关闭可见的引导 / 提示弹窗。
+
+    只点关闭图标或“我知道了 / 暂不 / 跳过”这类纯关闭按钮；
+    不点“去看看 / 立即开工 / 立即升级 / 确认 / 创建”等会推进业务或跳转的主按钮。
+    返回已执行的关闭动作说明列表。
+    """
+    dismissed: list[str] = []
+    for _ in range(2):  # 最多两轮，处理叠层弹窗
+        acted = False
+        for overlay in _visible_overlays(page):
+            # 1) 优先关闭图标
+            icon = overlay.locator(
+                "[aria-label*='close' i], [aria-label*='关闭'], "
+                "[class*='close-icon'], [class*='CloseIcon'], [class*='close-btn']"
+            ).first
+            try:
+                if icon.count() and icon.is_visible():
+                    if _safe_click(icon):
+                        dismissed.append("关闭弹窗图标")
+                        acted = True
+                        page.wait_for_timeout(600)
+                        continue
+            except Exception:
+                pass
+
+            # 2) 安全关闭文案按钮
+            btns = overlay.locator("button, a, [role='button']")
+            for j in range(min(btns.count(), 10)):
+                try:
+                    b = btns.nth(j)
+                    if not b.is_visible():
+                        continue
+                    text = (b.inner_text() or "").strip().replace("\n", " ")
+                    if not text or len(text) > 12:
+                        continue
+                    if any(x in text for x in CONFIRM_EXCLUDE_HINTS):
+                        continue
+                    if any(h in text for h in DISMISS_BUTTON_HINTS):
+                        if _safe_click(b):
+                            dismissed.append(f"关闭弹窗（{text}）")
+                            acted = True
+                            page.wait_for_timeout(600)
+                            break
+                except Exception:
+                    continue
+        if not acted:
+            break
+    return dismissed
 
 
 def _shoot(page, platform_id) -> str:
@@ -271,7 +367,12 @@ def run_platform(platform: dict) -> dict:
                 page.wait_for_timeout(800)
                 base["logged_in"] = True
 
-            # 登录态确认后再截图，避免回传刚打开时的未登录页面
+            # 先关掉引导 / 提示弹窗，避免遮罩挡住主界面入口
+            dismissed = _dismiss_overlays(page)
+            if dismissed:
+                base["detail"] = "已关闭弹窗：" + "；".join(dismissed)
+
+            # 登录态确认、弹窗关闭后再截图，避免回传被遮挡的未登录页面
             base["screenshot_url"] = _shoot(page, platform["id"])
 
             # 2. 是否已领取
@@ -288,7 +389,10 @@ def run_platform(platform: dict) -> dict:
 
             if not candidates:
                 base["status"] = "not_found"
-                base["message"] = "已进入页面，但未发现可领取 / 签到入口；可能今日已领、入口在二级页面，或需人工确认。"
+                if _visible_overlays(page):
+                    base["message"] = "页面仍被引导弹窗遮挡，领取 / 积分入口可能在主界面或二级页面，需人工确认。"
+                else:
+                    base["message"] = "当前页未发现可领取 / 签到 / 积分入口；入口可能在二级页面，或需人工确认。"
                 context.close()
                 return base
 
