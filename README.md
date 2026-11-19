@@ -1,9 +1,10 @@
 # 资料查询总结助手（Research Agent · Web 版）
 
-一个从 0 到 1 的最小可交互 Agent 工作台，含两个**互不融合**的功能：
+一个从 0 到 1 的最小可交互 Agent 工作台，含三个**互不融合**的功能：
 
 - **资料调研**：浏览器输入问题 → 后端联网检索 → 提炼带来源的中文摘要 → 对话与摘要存入 SQLite。
 - **浏览器自动化**：输入关键词 → 自动打开百度结果页并进入第一条 → 提炼要点摘要、截取页面，回传前端卡片；**流程不由模型决策、不写调研库**，由独立接口与独立前端视图承载。
+- **任务中心**：跨平台签到 / 领额度自动化 → 进入配置的平台，探测签到 / 领取入口并点击，回传状态、结果消息与截图；需要登录的平台先提示登录，**不自动填写任何凭证**。
 
 代码按「配置 / 提示词 / 工具 / LangGraph 状态图 / 存储 / Web 接口 / 前端」分层，便于照着改和扩展。调研 Agent 基于 **LangChain + LangGraph** 实现：`ChatOpenAI` 绑定工具，`StateGraph` 编排「模型 ⇄ 工具」的 ReAct 循环。
 
@@ -14,15 +15,18 @@ research-agent/
 ├── main.py             # 命令行入口（保留，可单独跑）
 ├── webapp.py          # FastAPI Web 后端：接口 + 静态页托管
 ├── agent.py           # LangGraph 状态图：模型节点 ⇄ 工具节点，结构化收尾
-├── config.py         # 读取 .env / 环境变量 + 护栏参数
+├── config.py          # 读取 .env / 环境变量 + 护栏参数
 ├── prompts.py         # 系统提示词（工具 schema 由 @tool 自动生成）
 ├── storage.py         # SQLite：对话、来源、摘要、轨迹持久化
 ├── tools/
 │   ├── search.py      # 搜索工具（默认 Bing 抓取，可换官方 API）
 │   ├── summarize.py   # 页面摘要（模型优先，本地抽取兜底）
-│   └── browser.py     # 独立浏览器自动化（Playwright 打开百度结果页并进入第一条）
+│   ├── browser.py     # 独立浏览器自动化（Playwright 打开百度结果页并进入第一条）
+│   └── quest.py       # 任务中心：跨平台签到 / 领额度探测与点击
 ├── static/
-│   └── index.html     # 前端页面（原生 HTML/JS，无构建）
+│   ├── index.html     # 前端页面结构（原生 HTML/JS，无构建）
+│   ├── app.js         # 三视图交互逻辑（调研 / 浏览器 / 任务中心）
+│   └── style.css      # 工作台样式与设计变量
 ├── data/records.db    # 本地数据库（不进版本库）
 ├── .env               # 敏感配置（不进版本库）
 ├── requirements.txt
@@ -57,7 +61,7 @@ LLM_MODEL=deepseek-flash
 ### 3. 启动 Web 服务
 
 ```powershell
-uvicorn webapp:app --host 0.0.0.0 --port 8000
+uvicorn webapp:app --host 127.0.0.1 --port 8000
 ```
 
 浏览器打开 <http://127.0.0.1:8000> 即可提问；历史记录自动保存在 `data/records.db`。
@@ -78,6 +82,8 @@ python main.py "什么是 RAG 检索增强生成"
 | GET | `/api/history` | 历史记录列表（倒序） |
 | GET | `/api/history/{id}` | 单条记录详情（含完整来源与工具轨迹） |
 | POST | `/api/browser/open` | **独立功能**：浏览器自动化，直达百度结果页进入第一条，回传标题/链接/正文；不走 Agent、不落库 |
+| GET | `/api/quests` | 任务清单 + 每个任务最近一次运行结果 |
+| POST | `/api/quests/run` | 运行指定任务；不传 `id` 则运行全部已启用任务，结果落库 |
 
 `POST /api/ask` 请求体：
 
@@ -152,6 +158,15 @@ python main.py "什么是 RAG 检索增强生成"
 - **局限**：第一条可能是广告/落地页；JS 重度渲染的站点（SPA）正文可能抓不全；目标站点可能拦截无头浏览器或弹验证码；单次流程约 5~15 秒。
 - **可见窗口**：本地默认弹出可见的 Chromium 窗口，能看到打开百度、进入结果的全过程；流程结束自动关闭。想静默后台运行，在 `.env` 设 `BROWSER_HEADLESS=1`。
 - **部署**：服务器除装 Python 包外，还需 `playwright install chromium` 与 `install-deps chromium`，且 `BROWSER_HEADLESS=1`，见部署文档 2.1 节。
+
+## 五补二、任务中心（跨平台签到 / 领额度）
+
+- **定位**：与调研、搜索链路都解耦的第三条独立链路，由 `POST /api/quests/run` 直接调用 `tools/quest.py`；不进入 Agent 循环、不写调研历史，运行结果单独存入 `quest_runs` 表。前端在工作台顶部「任务中心」标签页使用。
+- **任务配置**：平台入口全部写在 `tools/quest.py` 的 `QUESTS` 清单里，每条含 `id / name / url / description / login_required / enabled / note`。新增平台只需加一条配置，流程代码不用改；`enabled=False` 的占位条目不会被「全部运行」执行。
+- **执行流程**：用持久化浏览器目录（`data/pw-profile/`，已被 `.gitignore` 排除）打开平台 → 先识别是否被登录拦截 → 检测是否已领取 / 已签到 → 通用探测「签到 / 领取 / 每日福利 / 领额度」等可点入口 → 命中则点击并截图回传。
+- **状态语义**：`claim` 已点击领取、`already` 今日已领、`login_required` 需登录、`not_found` 未找到入口、`error` 执行异常。
+- **登录保守策略**：检测到登录跳转、密码 / 验证码输入框或登录引导文案时，标记 `login_required` 并交回前端；**不绕过登录、不填写账号密码或验证码**。有头模式下人工登录一次后，cookie 留在本地持久目录供后续任务复用。
+- **边界**：通用关键词探测对各平台个性化入口覆盖有限；入口在二级页面、弹窗内或需复杂交互时可能识别不到；不同平台选择器随页面改版会失效，需按实际页面调整配置。
 
 ## 六、部署到腾讯云
 
