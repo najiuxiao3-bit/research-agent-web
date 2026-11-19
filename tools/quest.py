@@ -3,16 +3,20 @@
 跨平台签到 / 领额度任务模块（任务中心，独立于调研链路与浏览器搜索链路）。
 
 设计原则：
-- 任务清单是纯配置（QUESTS），平台入口、说明、是否需要登录都在配置里维护，
-  后续新增平台只需往 QUESTS 里加一条，无需改流程代码。
+- 平台清单由前端页面可视化配置，存入 SQLite（storage.platforms 表）；
+  本模块只负责“拿到一个平台 dict → 打开 → 探测 → 点击 → 回传结果”，不维护写死清单。
 - 通用探测：进入页面后识别“签到 / 领取 / 每日福利 / 领额度”等可点入口，
   不把选择器写死到某个平台；命中即点击，未命中如实回传。
-- 登录保守策略：检测到登录拦截（跳转登录页、密码框、扫码、登录按钮）时，
-  标记 login_required 并交回前端，不绕过、不填写任何凭证。
-- 登录态可选持久化：使用持久化浏览器目录 data/pw-profile（已被 .gitignore 排除），
-  有头模式下人工登录一次后 cookie 保留；目录仅存本机，不上传仓库。
+- 登录保守策略：检测到登录拦截时，有头模式下保留浏览器窗口等待人工扫码，
+  轮询确认登录成功后再继续；超时仍未登录则标记 login_required 交回前端，
+  不绕过登录、不填写任何账号密码或验证码。
+- 登录态持久化：使用持久化浏览器目录 data/pw-profile（已被 .gitignore 排除），
+  扫码一次后 cookie 留在本地目录，后续任务自动复用，无需重复扫码。
 
-返回结构（单条任务）：
+平台 dict 字段（storage.list_platforms 对外结构）：
+    id, name, url, description, login_required, enabled, note
+
+返回结构（单条结果）：
 {
   "ok": bool,
   "id": str,
@@ -45,6 +49,10 @@ _UA = (
     "(KHTML, like Gecko) Chrome/159.0.0.0 Safari/537.36"
 )
 
+# 等待人工扫码登录的最长时间（秒）；轮询间隔（毫秒）
+LOGIN_WAIT_SECONDS = 90
+LOGIN_POLL_MS = 2000
+
 # 领取 / 签到类按钮文案关键词（中英文）
 CLAIM_KEYWORDS = (
     "签到", "领取", "领额度", "领福利", "每日福利", "领取奖励", "领取积分",
@@ -57,51 +65,25 @@ LOGIN_URL_HINTS = ("login", "signin", "sign-in", "oauth", "passport", "auth")
 LOGIN_TEXT_HINTS = ("扫码登录", "账号登录", "密码登录", "手机验证码登录", "请登录", "登录后")
 LOGIN_INPUT_SELECTORS = ("input[type='password']", "input[placeholder*='密码']", "input[placeholder*='验证码']")
 
-# ---------------------------------------------------------------------------
-# 任务清单（配置区）
-# ---------------------------------------------------------------------------
-# 字段说明：
-#   id          唯一标识
-#   name        平台 / 任务名（前端卡片标题）
-#   url         进入地址
-#   description 任务说明（前端卡片副文案）
-#   login_required 该平台是否需要登录
-#   enabled     是否纳入“全部运行”；False 表示占位模板，先不执行
-#   note        补充提示（如需要人工确认的入口）
-#
-# 注意：下面是结构模板。真实平台的入口文案 / 选择器以实际页面为准，
-# 添加时先在本地有头模式跑通，再把 enabled 置为 True。
-QUESTS: list[dict] = [
-    {
-        "id": "example-template",
-        "name": "示例平台（待配置）",
-        "url": "https://example.com",
-        "description": "把这一条替换成真实平台官网地址；进入后会自动探测签到 / 领取入口。",
-        "login_required": True,
-        "enabled": False,
-        "note": "占位模板：未配置真实入口前不会执行。",
-    },
-]
-
-
-def list_quests() -> list[dict]:
-    """对外返回任务清单（去掉运行期内部字段）。"""
-    return [
-        {
-            "id": q["id"],
-            "name": q["name"],
-            "url": q["url"],
-            "description": q.get("description", ""),
-            "login_required": q.get("login_required", True),
-            "enabled": q.get("enabled", True),
-            "note": q.get("note", ""),
-        }
-        for q in QUESTS
-    ]
-
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def base_result(platform_id, name: str = "", url: str = "") -> dict:
+    return {
+        "ok": False,
+        "id": str(platform_id),
+        "name": name,
+        "url": url,
+        "status": "error",
+        "message": "",
+        "detail": "",
+        "candidates": [],
+        "screenshot_url": "",
+        "logged_in": False,
+        "ran_at": _now(),
+    }
 
 
 def _detect_login(page) -> tuple[bool, str]:
@@ -126,6 +108,24 @@ def _detect_login(page) -> tuple[bool, str]:
         pass
 
     return False, ""
+
+
+def _wait_for_login(page) -> tuple[bool, str]:
+    """有头模式下保留窗口等待人工扫码；轮询直到登录解除或超时。
+
+    返回 (是否已登录, 说明)。无头环境无法扫码，直接判定超时。
+    """
+    if config.BROWSER_HEADLESS:
+        return False, "当前为无头运行环境，无法弹出窗口扫码；请在本地有头模式登录一次。"
+
+    deadline = time.time() + LOGIN_WAIT_SECONDS
+    while True:
+        blocked, reason = _detect_login(page)
+        if not blocked:
+            return True, "登录状态已确认"
+        if time.time() >= deadline:
+            return False, f"等待扫码超时（{LOGIN_WAIT_SECONDS}s），仍停留在登录 / 验证页"
+        page.wait_for_timeout(LOGIN_POLL_MS)
 
 
 def _find_claim_candidates(page) -> list[dict]:
@@ -172,13 +172,13 @@ def _detect_already(page) -> str:
     return ""
 
 
-def _shoot(page, quest_id: str) -> str:
+def _shoot(page, platform_id) -> str:
     """截图并返回静态访问路径；失败返回空串，不阻断主流程。"""
     try:
         SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
         fname = (
             f"quest_{int(time.time())}_"
-            f"{hashlib.md5(quest_id.encode('utf-8')).hexdigest()[:8]}.png"
+            f"{hashlib.md5(str(platform_id).encode('utf-8')).hexdigest()[:8]}.png"
         )
         page.screenshot(path=str(SCREENSHOT_DIR / fname), full_page=False, type="png")
         return f"/screenshots/{fname}"
@@ -186,30 +186,18 @@ def _shoot(page, quest_id: str) -> str:
         return ""
 
 
-def run_quest(quest: dict) -> dict:
-    """执行单个签到 / 领额度任务，返回结果 dict。"""
-    base = {
-        "ok": False,
-        "id": quest["id"],
-        "name": quest["name"],
-        "url": quest["url"],
-        "status": "error",
-        "message": "",
-        "detail": "",
-        "candidates": [],
-        "screenshot_url": "",
-        "logged_in": False,
-        "ran_at": _now(),
-    }
+def run_platform(platform: dict) -> dict:
+    """执行单个平台的签到 / 领额度任务，返回结果 dict。"""
+    base = base_result(platform.get("id"), platform.get("name", ""), platform.get("url", ""))
 
-    if not quest.get("enabled", True):
+    if not platform.get("enabled", True):
         base["status"] = "not_found"
-        base["message"] = "该任务为占位模板，尚未配置真实平台入口。"
+        base["message"] = "该平台为占位 / 已停用，尚未配置真实入口。"
         return base
 
     try:
         with sync_playwright() as p:
-            # 持久化浏览器目录：有头登录一次后保留 cookie（目录仅本机、已 gitignore）
+            # 持久化浏览器目录：扫码一次后 cookie 保留，后续自动复用（目录仅本机、已 gitignore）
             PROFILE_DIR.mkdir(parents=True, exist_ok=True)
             context = p.chromium.launch_persistent_context(
                 user_data_dir=str(PROFILE_DIR),
@@ -220,22 +208,27 @@ def run_quest(quest: dict) -> dict:
             )
             page = context.new_page()
 
-            page.goto(quest["url"], timeout=config.REQUEST_TIMEOUT * 1000)
+            page.goto(platform["url"], timeout=config.REQUEST_TIMEOUT * 1000)
             page.wait_for_load_state("domcontentloaded", timeout=config.REQUEST_TIMEOUT * 1000)
             page.wait_for_timeout(1200)
 
             # 1. 登录拦截识别
             login_blocked, reason = _detect_login(page)
             base["logged_in"] = not login_blocked
-            shot = _shoot(page, quest["id"])
-            base["screenshot_url"] = shot
+            base["screenshot_url"] = _shoot(page, platform["id"])
 
             if login_blocked:
-                base["status"] = "login_required"
-                base["message"] = "需要登录后才能领取。当前未自动登录，请在浏览器内完成登录后再运行。"
-                base["detail"] = reason
-                context.close()
-                return base
+                # 有头模式保留窗口等待扫码；轮询确认登录后再继续
+                logged_in, wait_note = _wait_for_login(page)
+                if not logged_in:
+                    base["status"] = "login_required"
+                    base["message"] = "需要登录后才能领取。请在弹出的浏览器窗口完成扫码 / 登录；登录一次后 cookie 会保存在本地目录，后续自动复用。"
+                    base["detail"] = wait_note
+                    context.close()
+                    return base
+                # 登录解除，刷新一次页面状态再继续
+                page.wait_for_timeout(800)
+                base["logged_in"] = True
 
             # 2. 是否已领取
             already_hint = _detect_already(page)
@@ -269,7 +262,7 @@ def run_quest(quest: dict) -> dict:
                 base["message"] = "找到了疑似入口，但点击未成功，可能被遮挡或需要人工操作。"
                 base["detail"] = f"{type(exc).__name__}: {exc}"
 
-            base["screenshot_url"] = _shoot(page, quest["id"] + "_after")
+            base["screenshot_url"] = _shoot(page, f"{platform['id']}_after")
             context.close()
 
         base["ok"] = True
@@ -283,31 +276,6 @@ def run_quest(quest: dict) -> dict:
         return base
 
 
-def run_all(quest_id: str | None = None) -> list[dict]:
-    """运行指定任务；不传 id 时运行全部已启用任务。"""
-    if quest_id:
-        target = next((q for q in QUESTS if q["id"] == quest_id), None)
-        if target is None:
-            return [{**base_result(quest_id), "message": "任务不存在。"}]
-        return [run_quest(target)]
-
-    results = []
-    for q in QUESTS:
-        results.append(run_quest(q))
-    return results
-
-
-def base_result(quest_id: str) -> dict:
-    return {
-        "ok": False,
-        "id": quest_id,
-        "name": "",
-        "url": "",
-        "status": "error",
-        "message": "",
-        "detail": "",
-        "candidates": [],
-        "screenshot_url": "",
-        "logged_in": False,
-        "ran_at": _now(),
-    }
+def run_platforms(platforms: list[dict]) -> list[dict]:
+    """顺序执行一组平台配置，返回结果列表。"""
+    return [run_platform(p) for p in platforms]
