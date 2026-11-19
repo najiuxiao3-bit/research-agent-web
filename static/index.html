@@ -79,24 +79,29 @@
       <!-- 视图二：浏览器自动化（独立功能，不走 Agent） -->
       <section id="view-browser" class="view hidden">
         <div class="browser-panel">
-          <div class="browser-hero">
-            <div class="browser-hero-icon" aria-hidden="true">🌐</div>
-            <h2>浏览器自动化</h2>
-            <p>输入关键词，自动打开百度结果页并进入第一条结果，回传页面标题、链接、摘要与截图。本地演示时会弹出可见浏览器窗口。</p>
-            <div class="browser-steps">
-              <span class="step"><span class="num">1</span>打开百度结果页</span>
-              <span class="step"><span class="num">2</span>进入第一条结果</span>
-              <span class="step"><span class="num">3</span>摘要 · 截图回传</span>
+          <div class="browser-inner">
+            <div class="browser-hero">
+              <div class="browser-hero-icon" aria-hidden="true">🌐</div>
+              <h2>浏览器自动化</h2>
+              <p>输入关键词，自动打开百度结果页并进入第一条结果，回传页面标题、链接、摘要与截图。本地演示时会弹出可见浏览器窗口。</p>
+              <div class="browser-steps">
+                <span class="step"><span class="num">1</span>打开百度结果页</span>
+                <span class="step"><span class="num">2</span>进入第一条结果</span>
+                <span class="step"><span class="num">3</span>摘要 · 截图回传</span>
+              </div>
             </div>
-          </div>
 
+            <div id="browser-result" class="browser-result"></div>
+          </div>
+        </div>
+
+        <footer class="browser-composer">
           <div class="browser-box">
             <input id="browser-keyword" type="text" maxlength="100" placeholder="输入要搜索的关键词，如：故宫博物院" />
             <button id="browser-run" class="send-btn">运行</button>
           </div>
-
-          <div id="browser-result" class="browser-result"></div>
-        </div>
+          <div class="composer-hint">回车运行 · 结果卡片在上方展示</div>
+        </footer>
       </section>
     </main>
   </div>
