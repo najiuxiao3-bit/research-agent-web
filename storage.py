@@ -56,6 +56,40 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS platforms (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at     TEXT NOT NULL,
+                name           TEXT NOT NULL,
+                url            TEXT NOT NULL,
+                description    TEXT NOT NULL DEFAULT '',
+                login_required INTEGER NOT NULL DEFAULT 1,
+                enabled        INTEGER NOT NULL DEFAULT 1,
+                note           TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+
+    _seed_default_platform()
+
+
+def _seed_default_platform() -> None:
+    """平台表为空时写入一条禁用的示例占位，便于首次打开看到结构。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM platforms").fetchone()
+        if row["n"] > 0:
+            return
+    save_platform(
+        {
+            "name": "示例平台（待配置）",
+            "url": "https://example.com",
+            "description": "在右侧表单添加真实平台网址；进入后会自动探测签到 / 领取入口。",
+            "login_required": True,
+            "enabled": False,
+            "note": "占位模板：未配置真实入口前不会被批量运行执行。",
+        }
+    )
 
 
 def save_record(
@@ -199,3 +233,86 @@ def latest_quest_runs() -> dict[str, dict]:
             "ran_at": row["created_at"],
         }
     return result
+
+
+# ---------- 任务中心：平台配置（页面可视化维护） ----------
+
+def _platform_row(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "created_at": row["created_at"],
+        "name": row["name"],
+        "url": row["url"],
+        "description": row["description"],
+        "login_required": bool(row["login_required"]),
+        "enabled": bool(row["enabled"]),
+        "note": row["note"],
+    }
+
+
+def list_platforms() -> list[dict]:
+    """返回全部平台配置，按创建时间正序。"""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM platforms ORDER BY id ASC"
+        ).fetchall()
+    return [_platform_row(r) for r in rows]
+
+
+def get_platform(platform_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM platforms WHERE id = ?", (platform_id,)
+        ).fetchone()
+    return _platform_row(row) if row else None
+
+
+def save_platform(data: dict) -> int:
+    """新增一条平台配置，返回自增 id。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO platforms
+                (created_at, name, url, description, login_required, enabled, note)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                (data.get("name") or "").strip(),
+                (data.get("url") or "").strip(),
+                data.get("description", ""),
+                1 if data.get("login_required", True) else 0,
+                1 if data.get("enabled", True) else 0,
+                data.get("note", ""),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def update_platform(platform_id: int, data: dict) -> bool:
+    """按 id 更新平台配置；存在并更新成功返回 True。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE platforms
+            SET name = ?, url = ?, description = ?, login_required = ?,
+                enabled = ?, note = ?
+            WHERE id = ?
+            """,
+            (
+                (data.get("name") or "").strip(),
+                (data.get("url") or "").strip(),
+                data.get("description", ""),
+                1 if data.get("login_required", True) else 0,
+                1 if data.get("enabled", True) else 0,
+                data.get("note", ""),
+                platform_id,
+            ),
+        )
+        return cur.rowcount > 0
+
+
+def delete_platform(platform_id: int) -> bool:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM platforms WHERE id = ?", (platform_id,))
+        return cur.rowcount > 0
