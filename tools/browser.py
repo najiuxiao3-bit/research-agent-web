@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-浏览器自动化工具：直达百度结果页 → 依次进入前几条结果 → 抽取有正文的页面。
+独立浏览器自动化模块：直达百度结果页 → 依次进入前几条结果 → 抽取有正文的页面。
 
-对外返回结构（与 search_web 对齐，便于 Agent 循环收集来源）：
+由 Web 后端独立接口 POST /api/browser/open 直接调用，不进入 Agent 循环、
+不经过大模型、不写调研历史。返回结构：
 {
   "ok": bool,
   "title": str,
   "url": str,
-  "content": str,                              # 正文截断，供模型阅读
-  "results": [{"title", "url", "snippet"}],     # 兼容现有来源收集逻辑
+  "content": str,                              # 正文截断，供前端展示
+  "results": [{"title", "url", "snippet"}],
   "message": str
 }
 

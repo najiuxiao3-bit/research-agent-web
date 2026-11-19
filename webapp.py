@@ -6,6 +6,7 @@ FastAPI Web 后端：把命令行 Agent 包装成可交互的 HTTP 服务。
     GET  /                  前端页面
     POST /api/ask           一次性返回完整结果（回退兼容）
     POST /api/ask/stream    SSE 事件流：状态 → 答案分片 → 来源 → 完成
+    POST /api/browser/open  独立浏览器自动化（不走 Agent、不落库）
     GET  /api/history       历史记录列表
     GET  /api/history/{id}  单条记录详情
 
@@ -26,6 +27,7 @@ from pydantic import BaseModel
 import config
 import storage
 from agent import run
+from tools.browser import open_first_result
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -35,6 +37,10 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 class AskRequest(BaseModel):
     query: str
+
+
+class BrowserRequest(BaseModel):
+    keyword: str
 
 
 @app.on_event("startup")
@@ -169,6 +175,22 @@ def ask_stream(req: AskRequest) -> StreamingResponse:
             "Connection": "keep-alive",
         },
     )
+
+
+# ---------- 独立浏览器自动化（不经过 Agent、不写调研库） ----------
+
+@app.post("/api/browser/open")
+def browser_open(req: BrowserRequest) -> dict:
+    keyword = req.keyword.strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="关键词不能为空")
+    if len(keyword) > 100:
+        raise HTTPException(status_code=400, detail="关键词过长，请控制在 100 字以内")
+
+    result = open_first_result(keyword)
+    if not result["ok"]:
+        raise HTTPException(status_code=502, detail=result.get("message") or "浏览器操作失败")
+    return result
 
 
 # ---------- 历史 ----------
