@@ -265,6 +265,9 @@ def quests_run(req: QuestRunRequest) -> dict:
     else:
         targets = [p for p in storage.list_platforms() if p["enabled"]]
 
+    if not targets:
+        return {"results": [], "message": "当前没有已启用的平台可运行，请先添加平台并勾选「启用」。"}
+
     results = quest.run_platforms(targets)
     for item in results:
         storage.save_quest_run(item)
