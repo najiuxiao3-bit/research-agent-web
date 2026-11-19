@@ -606,6 +606,8 @@
     if (questBusy) return;
     questBusy = true;
     questRunAll.disabled = true;
+    const allBtnLabel = questRunAll.textContent;
+    questRunAll.textContent = "运行中…";
     questGrid.querySelectorAll(".quest-run").forEach((b) => (b.disabled = true));
 
     try {
@@ -622,7 +624,16 @@
         } catch (_) {}
         throw new Error(detail);
       }
+      const data = await resp.json();
+      const results = data.results || [];
       await loadQuests();
+      if (results.length === 0) {
+        const msg = data.message || "当前没有已启用的平台可运行。";
+        questGrid.insertAdjacentHTML(
+          "afterbegin",
+          `<div class="quest-empty">${escapeHtml(msg)}</div>`
+        );
+      }
     } catch (err) {
       questGrid.insertAdjacentHTML(
         "beforeend",
@@ -631,6 +642,7 @@
     } finally {
       questBusy = false;
       questRunAll.disabled = false;
+      questRunAll.textContent = allBtnLabel;
     }
   }
 
