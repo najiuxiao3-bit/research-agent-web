@@ -40,6 +40,22 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS quest_runs (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at     TEXT NOT NULL,
+                quest_id       TEXT NOT NULL,
+                name           TEXT NOT NULL DEFAULT '',
+                status         TEXT NOT NULL DEFAULT 'pending',
+                message        TEXT NOT NULL DEFAULT '',
+                detail         TEXT NOT NULL DEFAULT '',
+                candidates_json TEXT NOT NULL DEFAULT '[]',
+                screenshot_url TEXT NOT NULL DEFAULT '',
+                logged_in      INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
 
 
 def save_record(
@@ -128,3 +144,58 @@ def clear_sources() -> int:
     with _connect() as conn:
         cur = conn.execute("UPDATE records SET sources_json = '[]'")
         return cur.rowcount
+
+
+# ---------- 任务中心：签到 / 领额度运行记录 ----------
+
+def save_quest_run(result: dict) -> int:
+    """保存一条任务运行结果，返回自增 id。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO quest_runs
+                (created_at, quest_id, name, status, message, detail,
+                 candidates_json, screenshot_url, logged_in)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                result.get("id", ""),
+                result.get("name", ""),
+                result.get("status", "error"),
+                result.get("message", ""),
+                result.get("detail", ""),
+                json.dumps(result.get("candidates", []), ensure_ascii=False),
+                result.get("screenshot_url", ""),
+                1 if result.get("logged_in") else 0,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def latest_quest_runs() -> dict[str, dict]:
+    """返回每个任务最近一次运行结果，键为 quest_id。"""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT q.* FROM quest_runs q
+            JOIN (
+                SELECT quest_id, MAX(id) AS max_id FROM quest_runs GROUP BY quest_id
+            ) t ON q.id = t.max_id
+            """
+        ).fetchall()
+
+    result: dict[str, dict] = {}
+    for row in rows:
+        result[row["quest_id"]] = {
+            "id": row["quest_id"],
+            "name": row["name"],
+            "status": row["status"],
+            "message": row["message"],
+            "detail": row["detail"],
+            "candidates": json.loads(row["candidates_json"] or "[]"),
+            "screenshot_url": row["screenshot_url"],
+            "logged_in": bool(row["logged_in"]),
+            "ran_at": row["created_at"],
+        }
+    return result
