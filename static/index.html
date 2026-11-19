@@ -43,6 +43,7 @@
         <nav class="view-tabs" id="view-tabs">
           <button class="tab active" data-view="research">资料调研</button>
           <button class="tab" data-view="browser">浏览器自动化</button>
+          <button class="tab" data-view="tasks">任务中心</button>
         </nav>
         <div class="topbar-meta">
           <span class="badge primary" id="model-badge">Research Agent</span>
@@ -102,6 +103,26 @@
           </div>
           <div class="composer-hint">回车运行 · 结果卡片在上方展示</div>
         </footer>
+      </section>
+
+      <!-- 视图三：任务中心（跨平台签到 / 领额度，独立链路） -->
+      <section id="view-tasks" class="view hidden">
+        <div class="browser-panel">
+          <div class="browser-inner">
+            <div class="browser-hero">
+              <div class="browser-hero-icon" aria-hidden="true">🎁</div>
+              <h2>任务中心</h2>
+              <p>跨平台签到 / 领额度自动化：进入配置的平台，探测签到与领取入口，回传状态与截图。需要登录的平台会先提示登录，不自动填写凭证。</p>
+            </div>
+
+            <div class="quest-toolbar">
+              <button id="quest-run-all" class="send-btn">全部运行</button>
+              <span class="quest-tip">任务清单在 <code>tools/quest.py</code> 的 QUESTS 中维护</span>
+            </div>
+
+            <div id="quest-grid" class="quest-grid"></div>
+          </div>
+        </div>
       </section>
     </main>
   </div>
