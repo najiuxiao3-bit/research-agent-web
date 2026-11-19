@@ -3,12 +3,15 @@
 独立浏览器自动化模块：直达百度结果页 → 依次进入前几条结果 → 抽取有正文的页面。
 
 由 Web 后端独立接口 POST /api/browser/open 直接调用，不进入 Agent 循环、
-不经过大模型、不写调研历史。返回结构：
+流程不由模型决策、不写调研历史；页面摘要可选调用模型提炼，失败回退本地抽取。
+返回结构：
 {
   "ok": bool,
   "title": str,
   "url": str,
   "content": str,                              # 正文截断，供前端展示
+  "summary": str,                              # 提炼后的要点摘要
+  "screenshot_url": str,                        # 页面截图静态访问路径
   "results": [{"title", "url", "snippet"}],
   "message": str
 }
@@ -20,13 +23,18 @@
   前 3 条，抽到足够正文才采用；都不足时回退最后一条并给出提示。
 """
 
+import hashlib
+import time
 import urllib.parse
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 import config
+from tools.summarize import summarize_text
 
 BAIDU_SEARCH = "https://www.baidu.com/s?wd="
+_SCREENSHOT_DIR = Path(__file__).resolve().parent.parent / "data" / "screenshots"
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/159.0.0.0 Safari/537.36"
@@ -107,11 +115,21 @@ def open_first_result(keyword: str) -> dict:
             "url": "",
             "content": "",
             "results": [],
+            "summary": "",
+            "screenshot_url": "",
             "message": "keyword 不能为空，请补充搜索关键词。",
         }
 
     keyword = keyword.strip()
-    empty = {"ok": False, "title": "", "url": "", "content": "", "results": []}
+    empty = {
+        "ok": False,
+        "title": "",
+        "url": "",
+        "content": "",
+        "results": [],
+        "summary": "",
+        "screenshot_url": "",
+    }
 
     try:
         with sync_playwright() as p:
@@ -169,6 +187,19 @@ def open_first_result(keyword: str) -> dict:
                         break
                 except Exception:
                     continue
+
+            # 截图当前最终落地页（截图失败不阻断主流程）
+            screenshot_url = ""
+            try:
+                _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+                fname = (
+                    f"{int(time.time())}_"
+                    f"{hashlib.md5(keyword.encode('utf-8')).hexdigest()[:8]}.png"
+                )
+                page.screenshot(path=str(_SCREENSHOT_DIR / fname), full_page=False, type="png")
+                screenshot_url = f"/screenshots/{fname}"
+            except Exception:
+                screenshot_url = ""
             browser.close()
 
         if not chosen and not last:
@@ -176,11 +207,14 @@ def open_first_result(keyword: str) -> dict:
 
         rec = chosen or last
         message = "" if chosen else "已打开相关页面，但该页正文较稀疏，仅回传标题与链接。"
+        summary = summarize_text(rec["content"], keyword)
         return {
             "ok": True,
             "title": rec["title"],
             "url": rec["url"],
             "content": rec["content"],
+            "summary": summary,
+            "screenshot_url": screenshot_url,
             "results": [
                 {"title": rec["title"], "url": rec["url"], "snippet": rec["content"][:200]}
             ],
