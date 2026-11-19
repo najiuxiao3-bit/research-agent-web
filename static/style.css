@@ -852,3 +852,155 @@ body {
 }
 .browser-original summary:hover { color: var(--accent); }
 .browser-original .browser-body { margin-top: 10px; font-size: 13.5px; }
+
+/* ===== 任务中心（跨平台签到 / 领额度） ===== */
+.quest-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.quest-tip {
+  font-size: 12px;
+  color: var(--muted);
+}
+.quest-tip code {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 11.5px;
+}
+
+.quest-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+.quest-card {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: fadeUp 0.28s ease;
+}
+
+.quest-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.quest-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.quest-status {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 4px 11px;
+  white-space: nowrap;
+  background: var(--bg-soft);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.quest-status.ok { background: #ecfdf3; color: var(--green); border-color: #bbebc9; }
+.quest-status.already { background: var(--accent-soft); color: var(--accent); border-color: #d6dffb; }
+.quest-status.login { background: #fff7ed; color: #c2610a; border-color: #fde2c4; }
+.quest-status.fail { background: var(--danger-soft); color: var(--danger); border-color: #fecdca; }
+
+.quest-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.quest-meta a {
+  color: var(--muted);
+  text-decoration: none;
+  word-break: break-all;
+}
+.quest-meta a:hover { color: var(--accent); }
+.quest-tag {
+  flex: none;
+  font-size: 11px;
+  border-radius: 6px;
+  padding: 1px 8px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+.quest-tag.free { background: #ecfdf3; color: var(--green); border-color: #bbebc9; }
+.quest-time { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+.quest-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.6;
+}
+.quest-note {
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+}
+.quest-msg {
+  font-size: 13px;
+  color: var(--text-2);
+  background: var(--panel-2);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  padding: 9px 12px;
+  line-height: 1.6;
+}
+
+.quest-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+.quest-run {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.12s;
+}
+.quest-run:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.quest-run:active:not(:disabled) { transform: scale(0.98); }
+.quest-run:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.quest-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13.5px;
+  padding: 40px 20px;
+  background: var(--panel-2);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-lg);
+}
