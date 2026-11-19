@@ -14,7 +14,8 @@ research-agent/
 ├── prompts.py         # 系统提示词 + 工具 Schema
 ├── storage.py         # SQLite：对话、来源、摘要、轨迹持久化
 ├── tools/
-│   └── search.py      # 搜索工具（默认 Bing 抓取，可换官方 API）
+│   ├── search.py      # 搜索工具（默认 Bing 抓取，可换官方 API）
+│   └── browser.py     # 浏览器工具（Playwright 打开百度结果页并进入第一条）
 ├── static/
 │   └── index.html     # 前端页面（原生 HTML/JS，无构建）
 ├── data/records.db    # 本地数据库（不进版本库）
@@ -32,6 +33,8 @@ research-agent/
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+# 浏览器工具需要下载 Chromium（仅使用 open_first_result 时）
+python -m playwright install chromium
 ```
 
 > Linux / macOS 激活：`.venv/bin/activate`。激活脚本被策略拦截时，先执行 `Set-ExecutionPolicy -Scope Process Bypass`。
@@ -95,7 +98,7 @@ python main.py "什么是 RAG 检索增强生成"
 浏览器提交问题
   → FastAPI 接收，校验配置与入参
   → Agent 循环：系统提示 + 问题 → 调模型
-        ├─ tool_calls：执行 search_web，结果回灌，继续循环
+        ├─ tool_calls：执行 search_web / open_first_result，结果回灌，继续循环
         └─ 无 tool_calls：得到最终摘要
   → 来源去重截断（最多 10 条），连同轨迹写入 SQLite
   → 返回前端渲染摘要与参考来源；历史可回看
@@ -106,6 +109,13 @@ python main.py "什么是 RAG 检索增强生成"
 - **默认**：Bing 网页结果抓取（免 Key、当前网络可达），解析标题 / 摘要 / 链接。
 - **局限**：免 Key 抓取对英文论文、长尾词相关性一般；页面结构变动可能影响解析。
 - **替换官方 API**：在 `tools/search.py` 的 `_search_via_tavily` 填入 Tavily / SerpAPI / 官方 Web Search 实现后切换调用，返回结构不变，后端无需改动。
+
+## 五补、浏览器工具（open_first_result）
+
+- **作用**：用 Playwright 无头 Chromium 直达百度结果页，依次进入前几条结果，抽取有正文页面的标题、正文与链接。
+- **触发**：模型判断需要查看某条结果完整页面时自动调用；正文稀疏时 Agent 会自动回退 `search_web` 补资料。
+- **局限**：第一条可能是广告/落地页；JS 重度渲染的站点（SPA）正文可能抓不全；目标站点可能拦截无头浏览器或弹验证码；单次流程约 5~15 秒。
+- **部署**：服务器除装 Python 包外，还需 `playwright install chromium` 与 `install-deps chromium`，见部署文档 2.1 节。
 
 ## 六、部署到腾讯云
 

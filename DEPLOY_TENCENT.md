@@ -8,6 +8,7 @@
 ```
 浏览器  →  腾讯云服务器（FastAPI + uvicorn）  →  DeepSeek / Bing 搜索
                     │
+                    ├─ Playwright 无头 Chromium（浏览器工具：打开百度结果页并进入第一条）
                     └─ SQLite 文件 data/records.db（对话与摘要持久化在服务器磁盘）
 ```
 
@@ -61,6 +62,19 @@ cd research-agent
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
+
+### 2.1 安装浏览器自动化依赖（浏览器工具需要）
+
+`requirements.txt` 已含 `playwright` Python 包；要跑通 `open_first_result` 浏览器工具，还需在服务器上下载 Chromium 并补齐系统库：
+
+```bash
+.venv/bin/playwright install chromium
+sudo .venv/bin/playwright install-deps chromium
+```
+
+- 仅使用浏览器工具时才需要这一步；不安装时，调用浏览器工具会报浏览器/系统库缺失。
+- 无头服务器没有图形界面，Chromium 以 headless 模式运行；`install-deps` 会通过 apt 安装运行所需的系统字体与库。
+- 1 核 1G 内存跑浏览器自动化偏紧，建议至少 1 核 2G；单次浏览器流程约 5~15 秒。
 
 ### 3. 写后端配置（敏感信息，不进仓库）
 
@@ -157,6 +171,7 @@ cp data/records.db data/records.db.bak
 | 接口返回 503 缺少配置 | 服务器上 `.env` 没写或没被读取 |
 | 接口返回 502 模型调用失败 | 查 Key 是否有效、额度、网络能否访问模型端点 |
 | 搜索结果为空/不相关 | 免 Key 的 Bing 抓取覆盖有限，可按 `tools/search.py` 说明接入官方搜索 API |
+| 浏览器工具超时/打不开页面 | 服务器先执行 `playwright install chromium` 和 `install-deps chromium`；无头环境下目标站点可能拦截或弹验证码，动态渲染页面正文可能抓不全 |
 | 服务重启后退出 | 确认用 systemd 常驻，而不是前台 `nohup` 后断开 SSH |
 
 ## 八、上生产前的加固建议（按需）

@@ -41,7 +41,26 @@ SEARCH_TOOL_SCHEMA = {
     },
 }
 
+BROWSER_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "open_first_result",
+        "description": "用真实浏览器打开百度搜索关键词，自动进入排在最前面的第一条结果页面，返回该页标题、正文摘要和最终链接。当搜索摘要不足以回答、需要查看某条结果完整页面内容时使用。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "keyword": {
+                    "type": "string",
+                    "description": "要在百度搜索的关键词。",
+                },
+            },
+            "required": ["keyword"],
+        },
+    },
+}
+
 # 注册表里把工具名映射到实际函数，agent 循环按名字查表执行。
 TOOL_REGISTRY = {
-    "search_web": None,  # 在 tools/search.py 导入后填充
+    "search_web": None,       # 在 tools/search.py 导入后填充
+    "open_first_result": None,  # 在 tools/browser.py 导入后填充
 }
