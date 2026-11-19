@@ -50,7 +50,8 @@ _UA = (
 )
 
 # 等待人工扫码登录的最长时间（秒）；轮询间隔（毫秒）
-LOGIN_WAIT_SECONDS = 90
+# 第一次登录需要打开手机扫码，留足时间；登录成功后 cookie 落盘，后续无需再等。
+LOGIN_WAIT_SECONDS = 180
 LOGIN_POLL_MS = 2000
 
 # 领取 / 签到类按钮文案关键词（中英文）
@@ -64,6 +65,10 @@ ALREADY_KEYWORDS = ("已领取", "已签到", "已打卡", "今日已领", "已�
 LOGIN_URL_HINTS = ("login", "signin", "sign-in", "oauth", "passport", "auth")
 LOGIN_TEXT_HINTS = ("扫码登录", "账号登录", "密码登录", "手机验证码登录", "请登录", "登录后")
 LOGIN_INPUT_SELECTORS = ("input[type='password']", "input[placeholder*='密码']", "input[placeholder*='验证码']")
+# 可见的登录入口按钮 / 链接文案（不写死到具体站点）
+LOGIN_BUTTON_HINTS = ("登录", "立即登录", "登录/注册", "登录注册", "sign in", "log in", "sign up")
+# 命中这些词视为“已登录态下的退出入口”，不能当成登录拦截
+LOGIN_EXCLUDE_HINTS = ("退出登录", "退出", "登出", "注销", "logout")
 
 
 def _now() -> str:
@@ -86,6 +91,36 @@ def base_result(platform_id, name: str = "", url: str = "") -> dict:
     }
 
 
+def _visible_login_button(page) -> str:
+    """查找可见的登录入口按钮 / 链接，命中返回其文案，否则返回空串。
+
+    只在可点元素里找，避免把营销文案（如“登录即到账”的说明文字）误判成登录拦截。
+    已登录态下的“退出 / 登出”入口会被排除。
+    """
+    for sel in ("button", "a", "[role='button']"):
+        try:
+            loc = page.locator(sel)
+            count = loc.count()
+        except Exception:
+            continue
+        for i in range(min(count, 40)):
+            try:
+                el = loc.nth(i)
+                if not el.is_visible():
+                    continue
+                text = (el.inner_text() or "").strip().replace("\n", " ")
+                if not text or len(text) > 12:
+                    continue
+                if any(x in text for x in LOGIN_EXCLUDE_HINTS):
+                    continue
+                low = text.lower()
+                if any(h in low for h in LOGIN_BUTTON_HINTS):
+                    return text
+            except Exception:
+                continue
+    return ""
+
+
 def _detect_login(page) -> tuple[bool, str]:
     """判断当前是否被登录拦截，返回 (是否需登录, 依据说明)。"""
     url = (page.url or "").lower()
@@ -98,6 +133,10 @@ def _detect_login(page) -> tuple[bool, str]:
                 return True, "页面出现密码 / 验证码输入框"
         except Exception:
             continue
+
+    btn_text = _visible_login_button(page)
+    if btn_text:
+        return True, f"页面存在登录入口（按钮：{btn_text}）"
 
     try:
         body_text = page.locator("body").first.inner_text()[:1200]
@@ -206,7 +245,8 @@ def run_platform(platform: dict) -> dict:
                 viewport={"width": 1280, "height": 900},
                 locale="zh-CN",
             )
-            page = context.new_page()
+            # 复用持久化目录里已有的标签页，避免多出一个空白初始页
+            page = context.pages[0] if context.pages else context.new_page()
 
             page.goto(platform["url"], timeout=config.REQUEST_TIMEOUT * 1000)
             page.wait_for_load_state("domcontentloaded", timeout=config.REQUEST_TIMEOUT * 1000)
@@ -215,20 +255,24 @@ def run_platform(platform: dict) -> dict:
             # 1. 登录拦截识别
             login_blocked, reason = _detect_login(page)
             base["logged_in"] = not login_blocked
-            base["screenshot_url"] = _shoot(page, platform["id"])
 
             if login_blocked:
-                # 有头模式保留窗口等待扫码；轮询确认登录后再继续
+                # 有头模式保留窗口等待人工登录；轮询确认登录解除后再继续。
+                # 登录成功后 cookie 随持久化目录落盘，下次打开自动带登录态。
                 logged_in, wait_note = _wait_for_login(page)
                 if not logged_in:
                     base["status"] = "login_required"
                     base["message"] = "需要登录后才能领取。请在弹出的浏览器窗口完成扫码 / 登录；登录一次后 cookie 会保存在本地目录，后续自动复用。"
                     base["detail"] = wait_note
+                    base["screenshot_url"] = _shoot(page, platform["id"])
                     context.close()
                     return base
-                # 登录解除，刷新一次页面状态再继续
+                # 登录解除，稍等页面刷新状态再继续
                 page.wait_for_timeout(800)
                 base["logged_in"] = True
+
+            # 登录态确认后再截图，避免回传刚打开时的未登录页面
+            base["screenshot_url"] = _shoot(page, platform["id"])
 
             # 2. 是否已领取
             already_hint = _detect_already(page)
