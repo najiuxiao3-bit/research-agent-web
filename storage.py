@@ -114,3 +114,17 @@ def get_record(record_id: int) -> dict | None:
         "model": row["model"],
         "status": row["status"],
     }
+
+
+def clear_all_records() -> int:
+    """清空全部历史会话（连同答案、来源、轨迹一并删除），返回删除条数。"""
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM records")
+        return cur.rowcount
+
+
+def clear_sources() -> int:
+    """清空所有记录里保存的来源引用，保留问答正文与轨迹，返回受影响条数。"""
+    with _connect() as conn:
+        cur = conn.execute("UPDATE records SET sources_json = '[]'")
+        return cur.rowcount
