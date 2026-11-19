@@ -663,3 +663,47 @@ body {
   color: var(--danger);
 }
 .browser-card .muted { color: var(--muted); }
+
+/* 页面截图 */
+.browser-shot {
+  width: 100%;
+  display: block;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  margin: 12px 0;
+  box-shadow: var(--shadow);
+}
+
+/* 摘要 */
+.browser-summary {
+  background: #fcfdff;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 12px 0;
+}
+.summary-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  letter-spacing: 0.03em;
+}
+.summary-body { font-size: 14px; line-height: 1.7; }
+.summary-body ul { margin: 0; padding-left: 20px; }
+.summary-body li { margin: 5px 0; }
+.summary-body strong { font-weight: 600; }
+
+/* 原文折叠 */
+.browser-original {
+  margin-top: 12px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+.browser-original summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  user-select: none;
+}
+.browser-original summary:hover { color: var(--primary); }
+.browser-original .browser-body { margin-top: 10px; font-size: 13.5px; }
