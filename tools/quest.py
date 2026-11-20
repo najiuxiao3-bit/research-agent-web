@@ -61,8 +61,11 @@ CLAIM_KEYWORDS = (
 )
 # 积分 / 额度 / 余额 / 权益类入口（状态展示按钮，点进去再找可领取项）
 BALANCE_KEYWORDS = ("积分", "额度", "余额", "福利", "权益", "reward")
-# 已领取 / 已签到文案关键词
-ALREADY_KEYWORDS = ("已领取", "已签到", "已打卡", "今日已领", "已完成", "claimed", "checked in")
+# 已领取 / 已签到 / 领取成功文案关键词
+ALREADY_KEYWORDS = (
+    "已领取", "已签到", "已打卡", "今日已领", "已完成", "领取成功",
+    "已到账", "到账成功", "claimed", "checked in",
+)
 # 登录拦截信号
 LOGIN_URL_HINTS = ("login", "signin", "sign-in", "oauth", "passport", "auth")
 LOGIN_TEXT_HINTS = ("扫码登录", "账号登录", "密码登录", "手机验证码登录", "请登录", "登录后")
@@ -174,10 +177,13 @@ def _wait_for_login(page) -> tuple[bool, str]:
 
 
 def _find_claim_candidates(page) -> list[dict]:
-    """收集页面上疑似领取 / 签到 / 积分额度的可点元素，返回 [{text, locator}]。"""
+    """收集页面上疑似领取 / 签到 / 积分额度的可点元素。
+
+    返回 [{text, locator, level}]；level=0 为强领取入口（签到 / 领取类文案），
+    level=1 为弱余额入口（积分 / 额度展示，点进去再找可领取项）。强候选优先点击。
+    """
     candidates: list[dict] = []
     seen: set[str] = set()
-    entry_keywords = CLAIM_KEYWORDS + BALANCE_KEYWORDS
     selectors = ["button", "a", "[role='button']", ".btn", "[class*='sign']", "[class*='claim']"]
 
     for sel in selectors:
@@ -195,14 +201,20 @@ def _find_claim_candidates(page) -> list[dict]:
                 if not text or len(text) > 30:
                     continue
                 key = text.lower()
-                if not any(k in key for k in entry_keywords):
+                if any(k in key for k in CLAIM_KEYWORDS):
+                    level = 0
+                elif any(k in key for k in BALANCE_KEYWORDS):
+                    level = 1
+                else:
                     continue
                 if text in seen:
                     continue
                 seen.add(text)
-                candidates.append({"text": text, "locator": el})
+                candidates.append({"text": text, "locator": el, "level": level})
             except Exception:
                 continue
+
+    candidates.sort(key=lambda c: c["level"])
     return candidates
 
 
@@ -242,18 +254,57 @@ def _safe_click(el) -> bool:
 
 
 def _visible_overlays(page) -> list:
-    """返回当前可见的弹窗 / 遮罩容器列表。"""
+    """返回当前可见的弹窗 / 遮罩容器列表。
+
+    同一弹窗会被多个选择器（role=dialog / .modal / [class*=modal]）重复命中，
+    这里按 DOM 元素路径去重，避免重复处理同一个弹窗。
+    """
     overlays = []
+    seen: set[str] = set()
     for sel in OVERLAY_SELECTORS:
         try:
             loc = page.locator(sel)
             for i in range(min(loc.count(), 4)):
                 el = loc.nth(i)
-                if el.is_visible():
-                    overlays.append(el)
+                if not el.is_visible():
+                    continue
+                try:
+                    key = el.evaluate(
+                        "e => { const s=[]; let n=e; "
+                        "while(n && n.nodeType===1){ "
+                        "const i = n.parentElement ? Array.prototype.indexOf.call(n.parentElement.children, n) : -1; "
+                        "s.push(n.tagName+'.'+(typeof n.className==='string'?n.className:'')+'#'+i); n=n.parentElement; } "
+                        "return s.join('>'); }"
+                    )
+                except Exception:
+                    key = None
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                overlays.append(el)
         except Exception:
             continue
     return overlays
+
+
+def _overlay_has_claim(overlay) -> bool:
+    """弹窗内是否存在领取 / 签到类业务按钮。
+
+    含这类按钮的弹窗是“领取目标弹窗”，不能被当成引导弹窗关掉，需保留并交由候选流程点击。
+    """
+    btns = overlay.locator("button, a, [role='button']")
+    for j in range(min(btns.count(), 12)):
+        try:
+            b = btns.nth(j)
+            if not b.is_visible():
+                continue
+            text = (b.inner_text() or "").strip().replace("\n", " ")
+            if text and any(k in text.lower() for k in CLAIM_KEYWORDS):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _dismiss_overlays(page) -> list[str]:
@@ -261,12 +312,16 @@ def _dismiss_overlays(page) -> list[str]:
 
     只点关闭图标或“我知道了 / 暂不 / 跳过”这类纯关闭按钮；
     不点“去看看 / 立即开工 / 立即升级 / 确认 / 创建”等会推进业务或跳转的主按钮。
-    返回已执行的关闭动作说明列表。
+    含领取 / 签到按钮的目标弹窗直接跳过，不关闭。返回已执行的关闭动作说明列表。
     """
     dismissed: list[str] = []
     for _ in range(2):  # 最多两轮，处理叠层弹窗
         acted = False
         for overlay in _visible_overlays(page):
+            # 领取 / 签到目标弹窗：保留，绝不关闭
+            if _overlay_has_claim(overlay):
+                continue
+
             # 1) 优先关闭图标
             icon = overlay.locator(
                 "[aria-label*='close' i], [aria-label*='关闭'], "
@@ -367,15 +422,22 @@ def run_platform(platform: dict) -> dict:
                 page.wait_for_timeout(800)
                 base["logged_in"] = True
 
-            # 先关掉引导 / 提示弹窗，避免遮罩挡住主界面入口
-            dismissed = _dismiss_overlays(page)
-            if dismissed:
-                base["detail"] = "已关闭弹窗：" + "；".join(dismissed)
+            # 2. 先探测可领取入口（含弹窗内的强领取按钮），避免先把领取目标弹窗关掉
+            candidates = _find_claim_candidates(page)
+            strong = [c for c in candidates if c["level"] == 0]
 
-            # 登录态确认、弹窗关闭后再截图，避免回传被遮挡的未登录页面
+            # 没有强领取入口时，再关闭纯引导 / 提示弹窗（含领取按钮的弹窗会被跳过）
+            if not strong:
+                dismissed = _dismiss_overlays(page)
+                if dismissed:
+                    base["detail"] = "已关闭弹窗：" + "；".join(dismissed)
+                candidates = _find_claim_candidates(page)
+                strong = [c for c in candidates if c["level"] == 0]
+
+            # 登录态确认后再截图，避免回传刚打开时的未登录页面
             base["screenshot_url"] = _shoot(page, platform["id"])
 
-            # 2. 是否已领取
+            # 3. 是否已领取
             already_hint = _detect_already(page)
             if already_hint:
                 base["status"] = "already"
@@ -383,32 +445,35 @@ def run_platform(platform: dict) -> dict:
                 context.close()
                 return base
 
-            # 3. 探测可领取入口
-            candidates = _find_claim_candidates(page)
             base["candidates"] = [c["text"] for c in candidates]
 
-            if not candidates:
+            # 4. 选择目标：强领取入口优先，其次余额 / 权益入口
+            target_list = strong or candidates
+            if not target_list:
                 base["status"] = "not_found"
                 if _visible_overlays(page):
-                    base["message"] = "页面仍被引导弹窗遮挡，领取 / 积分入口可能在主界面或二级页面，需人工确认。"
+                    base["message"] = "页面仍被弹窗遮挡，领取 / 积分入口可能在主界面或二级页面，需人工确认。"
                 else:
                     base["message"] = "当前页未发现可领取 / 签到 / 积分入口；入口可能在二级页面，或需人工确认。"
                 context.close()
                 return base
 
-            # 4. 点击第一个候选入口
-            target = candidates[0]
-            try:
-                target["locator"].scroll_into_view_if_needed(timeout=2000)
-                target["locator"].click(timeout=3000)
-                page.wait_for_timeout(1200)
-                base["status"] = "claim"
-                base["message"] = f"已点击“{target['text']}”，请查看页面反馈确认是否到账。"
-                base["detail"] = f"候选入口：{', '.join(c['text'] for c in candidates)}"
-            except Exception as exc:
+            target = target_list[0]
+            if _safe_click(target["locator"]):
+                page.wait_for_timeout(1500)
+                # 点击后识别到账 / 已领取反馈
+                feedback = _detect_already(page)
+                if feedback:
+                    base["status"] = "already"
+                    base["message"] = f"领取成功（页面显示“{feedback}”），积分 / 额度已到账。"
+                else:
+                    base["status"] = "claim"
+                    base["message"] = f"已点击“{target['text']}”，请查看页面反馈确认是否到账。"
+                base["detail"] = f"候选入口：{', '.join(c['text'] for c in target_list)}"
+            else:
                 base["status"] = "not_found"
                 base["message"] = "找到了疑似入口，但点击未成功，可能被遮挡或需要人工操作。"
-                base["detail"] = f"{type(exc).__name__}: {exc}"
+                base["detail"] = f"候选入口：{', '.join(c['text'] for c in target_list)}"
 
             base["screenshot_url"] = _shoot(page, f"{platform['id']}_after")
             context.close()
